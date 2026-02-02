@@ -36,7 +36,16 @@
 #define system qsystem
 #endif
 
-// #define NO_QRWA
+// #define OLD_SWATCH
+// #define NO_QRP
+// #define NO_QTF
+// #define NO_QDUEL
+
+// QTF in its current state is only usable with QRP.
+// If the QRP proposal is rejected, disable QTF as well. 
+#if defined NO_QRP && !defined NO_QTF
+#define NO_QTF
+#endif
 
 // contract_def.h needs to be included first to make sure that contracts have minimal access
 #include "contract_core/contract_def.h"
@@ -122,6 +131,7 @@ static bool loadMiningSeedFromFile = false;
 static bool loadAllNodeStateFromFile = false;
 
 static volatile int shutDownNode = 0;
+static volatile char enableBadBoySpammer = 0;
 
 #include "extensions/cxxopts.h"
 #include "extensions/overload.h"
@@ -152,6 +162,7 @@ TickStorage::TransactionsDigestAccess TickStorage::transactionsDigestAccess;
 #define MIN_MINING_SOLUTIONS_PUBLICATION_OFFSET 3 // Must be 3+
 #define TIME_ACCURACY 5000
 constexpr unsigned long long TARGET_MAINTHREAD_LOOP_DURATION = 30; // mcs, it is the target duration of the main thread loop
+constexpr unsigned int COMMON_BUFFERS_COUNT = 2;
 
 struct Processor : public CustomStack
 {
@@ -248,13 +259,6 @@ static int nContractProcessorIDs = 0;
 static int nSolutionProcessorIDs = 0;
 
 static ScoreFunction<
-    NUMBER_OF_INPUT_NEURONS,
-    NUMBER_OF_OUTPUT_NEURONS,
-    NUMBER_OF_TICKS,
-    NUMBER_OF_NEIGHBORS,
-    POPULATION_THRESHOLD,
-    NUMBER_OF_MUTATIONS,
-    SOLUTION_THRESHOLD_DEFAULT,
     NUMBER_OF_SOLUTION_PROCESSORS
 > * score = nullptr;
 static volatile char solutionsLock = 0;
@@ -266,7 +270,7 @@ static m256i competitorPublicKeys[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static unsigned int competitorScores[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static bool competitorComputorStatuses[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static unsigned int minimumComputorScore = 0, minimumCandidateScore = 0;
-static int solutionThreshold[MAX_NUMBER_EPOCH] = { -1 };
+static int solutionThreshold[MAX_NUMBER_EPOCH][score_engine::AlgoType::MaxAlgoCount];
 static unsigned long long solutionTotalExecutionTicks = 0;
 static unsigned long long K12MeasurementsCount = 0;
 static unsigned long long K12MeasurementsSum = 0;
@@ -820,10 +824,13 @@ static void processBroadcastMessage(const unsigned long long processorNumber, Re
                                         if (k == system.numberOfSolutions)
                                         {
                                             unsigned int solutionScore = (*score)(processorNumber, request->destinationPublicKey, solution_miningSeed, solution_nonce);
-                                            const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch] : SOLUTION_THRESHOLD_DEFAULT;
+                                            score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(solution_nonce.m256i_u8);
+                                            const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+                                                solutionThreshold[system.epoch][selectedAlgo]
+                                                : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
                                             if (system.numberOfSolutions < MAX_NUMBER_OF_SOLUTIONS
-                                                && score->isValidScore(solutionScore)
-                                                && score->isGoodScore(solutionScore, threshold))
+                                                && score->isValidScore(solutionScore, selectedAlgo)
+                                                && score->isGoodScore(solutionScore, threshold, selectedAlgo))
                                             {
                                                 ACQUIRE(solutionsLock);
 
@@ -896,7 +903,7 @@ static void processBroadcastComputors(Peer* peer, RequestResponseHeader* header)
             {
                 ACQUIRE(minerScoreArrayLock);
                 numberOfOwnComputorIndices = 0;
-                for (unsigned int i = 0; i < NUMBER_OF_COMPUTORS; i++)
+                for (unsigned int i = 0; i < NUMBER_0F_COMPUT0RS; i++)
                 {
                     minerPublicKeys[i] = request->computors.publicKeys[i];
 
@@ -1479,7 +1486,8 @@ static void processRequestSystemInfo(Peer* peer, RequestResponseHeader* header)
     respondedSystemInfo.numberOfTransactions = numberOfTransactions;
 
     respondedSystemInfo.randomMiningSeed = score->currentRandomSeed;
-    respondedSystemInfo.solutionThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch] : SOLUTION_THRESHOLD_DEFAULT;
+    respondedSystemInfo.solutionThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::HyperIdentity] : HYPERIDENTITY_SOLUTION_THRESHOLD_DEFAULT;
+    respondedSystemInfo.solutionAdditionalThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::Addition] : ADDITION_SOLUTION_THRESHOLD_DEFAULT;
 
     respondedSystemInfo.totalSpectrumAmount = spectrumInfo.totalAmount;
     respondedSystemInfo.currentEntityBalanceDustThreshold = (dustThresholdBurnAll > dustThresholdBurnHalf) ? dustThresholdBurnAll : dustThresholdBurnHalf;
@@ -1704,12 +1712,36 @@ static void processSpecialCommand(Peer* peer, RequestResponseHeader* header)
                 // can only set future epoch
                 if (_request->epoch > system.epoch && _request->epoch < MAX_NUMBER_EPOCH)
                 {
-                    solutionThreshold[_request->epoch] = _request->threshold;
+                    if (_request->algoType == score_engine::AlgoType::HyperIdentity)
+                    {
+                        solutionThreshold[_request->epoch][score_engine::AlgoType::HyperIdentity] = _request->threshold;
+                    }
+                    else if (_request->algoType == score_engine::AlgoType::Addition)
+                    {
+                        solutionThreshold[_request->epoch][score_engine::AlgoType::Addition] = _request->threshold;
+                    }
+                    else // unknown algo, don't do anything
+                    {
+
+                    }
                 }
                 SpecialCommandSetSolutionThresholdRequestAndResponse response;
                 response.everIncreasingNonceAndCommandType = _request->everIncreasingNonceAndCommandType;
                 response.epoch = _request->epoch;
-                response.threshold = (_request->epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[_request->epoch] : SOLUTION_THRESHOLD_DEFAULT;
+                response.algoType = _request->algoType;
+                if (_request->algoType == score_engine::AlgoType::HyperIdentity)
+                {
+                    response.threshold = (_request->epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[_request->epoch][score_engine::AlgoType::HyperIdentity] : HYPERIDENTITY_SOLUTION_THRESHOLD_DEFAULT;
+                }
+                else if (_request->algoType == score_engine::AlgoType::Addition)
+                {
+                    response.threshold = (_request->epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[_request->epoch][score_engine::AlgoType::Addition] : ADDITION_SOLUTION_THRESHOLD_DEFAULT;
+                }
+                else // unknown algo, respond with an invalid number
+                {
+                    response.algoType = -1;
+                }
+
                 enqueueResponse(peer, sizeof(SpecialCommandSetSolutionThresholdRequestAndResponse), SpecialCommand::type(), header->dejavu(), &response);
             }
             break;
@@ -1961,6 +1993,7 @@ static void beginCustomMiningPhase()
 // resetPhase: If true, allows reinitializing mining seed and the custom mining phase flag
 // even when already inside the current phase. These values are normally set only once
 // at the beginning of a phase.
+static bool gIsInFullExternalTime = false;
 static void checkAndSwitchMiningPhase(short tickEpoch, TimeDate tickDate, bool resetPhase)
 {
     bool isBeginOfCustomMiningPhase = false;
@@ -2041,6 +2074,8 @@ static void checkAndSwitchMiningPhase(short tickEpoch, TimeDate tickDate, bool r
                 }
             }
         }
+
+        gIsInFullExternalTime = isInFullExternalTime;
     }
 
     // Variables need to be reset in the beginning of custom mining phase
@@ -2703,7 +2738,10 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
     if (!(minerSolutionFlags[flagIndex >> 6] & (1ULL << (flagIndex & 63))) || isRevalidation)
     {
         minerSolutionFlags[flagIndex >> 6] |= (1ULL << (flagIndex & 63));
-        const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch] : SOLUTION_THRESHOLD_DEFAULT;
+        score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(transaction->nonce.m256i_u8);
+        const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+                solutionThreshold[system.epoch][selectedAlgo]
+                : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
 #ifdef TESTNET
         unsigned int solutionScore = (*::score)(processorNumber, transaction->sourcePublicKey, transaction->miningSeed, transaction->nonce);
 #else
@@ -2713,15 +2751,15 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
             solutionScore = (*::score)(processorNumber, transaction->sourcePublicKey, transaction->miningSeed, transaction->nonce);
         } else
         {
+            // Make the score is valid
             solutionScore = threshold + 1;
         }
 #endif
-        if (score->isValidScore(solutionScore))
+        if (score->isValidScore(solutionScore, selectedAlgo))
         {
             resourceTestingDigest ^= solutionScore;
             KangarooTwelve(&resourceTestingDigest, sizeof(resourceTestingDigest), &resourceTestingDigest, sizeof(resourceTestingDigest));
-
-            if (score->isGoodScore(solutionScore, threshold))
+            if (score->isGoodScore(solutionScore, threshold, selectedAlgo))
             {
                 // Solution deposit return
                 {
@@ -3905,8 +3943,13 @@ static void beginEpoch()
     minimumComputorScore = 0;
     minimumCandidateScore = 0;
 
-    if (system.epoch < MAX_NUMBER_EPOCH && (solutionThreshold[system.epoch] <= 0 || solutionThreshold[system.epoch] > NUMBER_OF_OUTPUT_NEURONS)) { // invalid threshold
-        solutionThreshold[system.epoch] = SOLUTION_THRESHOLD_DEFAULT;
+    if (system.epoch < MAX_NUMBER_EPOCH && !score_engine::checkAlgoThreshold(solutionThreshold[system.epoch][score_engine::AlgoType::HyperIdentity], score_engine::AlgoType::HyperIdentity))
+    {
+        solutionThreshold[system.epoch][score_engine::AlgoType::HyperIdentity] = HYPERIDENTITY_SOLUTION_THRESHOLD_DEFAULT;
+    }
+    if (system.epoch < MAX_NUMBER_EPOCH && !score_engine::checkAlgoThreshold(solutionThreshold[system.epoch][score_engine::AlgoType::Addition], score_engine::AlgoType::Addition))
+    {
+        solutionThreshold[system.epoch][score_engine::AlgoType::Addition] = ADDITION_SOLUTION_THRESHOLD_DEFAULT;
     }
 
     system.latestOperatorNonce = 0;
@@ -5347,6 +5390,113 @@ void checkAllContractLocksReleased()
     }
 }
 
+void doBadBoySpam()
+{
+    if (!enableBadBoySpammer)
+    {
+        return;
+    }
+
+    if (enableBadBoySpammer == 2)
+    {
+        if ((gIsInFullExternalTime) || !gIsInCustomMiningState)
+        {
+            return;
+        }
+    }
+
+    // Qx
+    {
+        struct
+        {
+            Transaction tx;
+            QX::AddToAskOrder_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 0;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(QX_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 5; // AddToAskOrder
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.assetName = 1;
+        txPacket.input.issuer = m256i::randomValue();
+        txPacket.input.numberOfShares = 1;
+        txPacket.input.price = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Qx");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+
+    // Qbond
+    {
+
+        struct
+        {
+            Transaction tx;
+            QBOND::AddAskOrder_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 0;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(QBOND_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 3; // AddAskOrder
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.epoch = system.epoch;
+        txPacket.input.price = 1;
+        txPacket.input.numberOfMBonds = 1;
+        txPacket.input.price = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Qbond");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+
+    // Nost (skippable)
+    {
+        struct
+        {
+            Transaction tx;
+            NOST::investInProject_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 1;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(NOST_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 6; // investInProject
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.indexOfFundraising = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Nost");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+}
+
 // Disabling the optimizer for tickProcessor() is a workaround introduced to solve an issue
 // that has been observed in testnets/2025-04-30-profiling.
 // In this test, the processor calling tickProcessor() was stuck before entering the function.
@@ -5397,6 +5547,11 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                     WAIT_WHILE(requestPersistingNodeState);
                     persistingNodeStateTickProcWaiting = 0;
                 }
+                std::thread spamThread([]
+                {
+                    doBadBoySpam();
+                });
+                spamThread.detach();
                 processTick(processorNumber);
                 latestProcessedTick = system.tick;
 
@@ -5865,8 +6020,11 @@ static void tickProcessor(void*, unsigned long long processorNumber)
 
                                     // Reorder futureComputors so requalifying computors keep their index
                                     // This is needed for correct execution fee reporting across epoch boundaries
-                                    static_assert(reorgBufferSize >= stableComputorIndexBufferSize(), "reorgBuffer too small for stable computor index");
+                                    static_assert(defaultCommonBuffersSize >= stableComputorIndexBufferSize(), "commonBuffers too small for stable computor index");
+                                    void* reorgBuffer = commonBuffers.acquireBuffer(stableComputorIndexBufferSize());
+                                    ASSERT(reorgBuffer);
                                     calculateStableComputorIndex(system.futureComputors, broadcastedComputors.computors.publicKeys, reorgBuffer);
+                                    commonBuffers.releaseBuffer(reorgBuffer);
 
                                     // instruct main loop to save system and wait until it is done
                                     systemMustBeSaved = true;
@@ -5965,7 +6123,6 @@ static void tickProcessor(void*, unsigned long long processorNumber)
         tickerLoopDenominator++;
     }
 }
-OPTIMIZE_ON()
 
 static void emptyCallback(EFI_EVENT Event, void* Context)
 {
@@ -6207,7 +6364,7 @@ static bool initialize()
         if (!initSpectrum())
             return false;
 
-        if (!initCommonBuffers())
+        if (!commonBuffers.init(COMMON_BUFFERS_COUNT))
             return false;
 
         if (!initAssets())
@@ -6236,7 +6393,7 @@ static bool initialize()
         }
         setMem(score_qpi, sizeof(*score_qpi), 0);
 
-        setMem(solutionThreshold, sizeof(int) * MAX_NUMBER_EPOCH, 0);
+        setMem(&solutionThreshold[0][0], sizeof(int) * MAX_NUMBER_EPOCH * score_engine::AlgoType::MaxAlgoCount, 0);
         if (!allocPoolWithErrorLog(L"minserSolutionFlag", NUMBER_OF_MINER_SOLUTION_FLAGS / 8, (void**)&minerSolutionFlags, __LINE__))
         {
             return false;
@@ -6615,7 +6772,7 @@ static void deinitialize()
 
     deinitAssets();
     deinitSpectrum();
-    deinitCommonBuffers();
+    commonBuffers.deinit();
 
     logger.deinitLogging();
 
@@ -7077,6 +7234,12 @@ static void logHealthStatus()
     appendNumber(message, contractLocalsStack[0].capacity(), TRUE);
     appendText(message, L" | max processors waiting ");
     appendNumber(message, contractLocalsStackLockWaitingCountMax, TRUE);
+    logToConsole(message);
+
+    setText(message, L"Common buffers: invalid release ");
+    appendNumber(message, commonBuffers.getInvalidReleaseCount(), FALSE);
+    appendText(message, L", max waiting processors ");
+    appendNumber(message, commonBuffers.getMaxWaitingProcessorCount(), FALSE);
     logToConsole(message);
 
     setText(message, L"Connections:");
@@ -8197,7 +8360,7 @@ unsigned long long getTotalRam()
     totalRam += spectrumDigestsSizeInByte;
 
     // reorgBuffer
-    totalRam += reorgBufferSize;
+    totalRam += COMMON_BUFFERS_COUNT * defaultCommonBuffersSize;
 
     // assets & assetDigets & assetChangeFlags
     totalRam += ASSETS_CAPACITY * sizeof(AssetRecord);
@@ -8292,6 +8455,8 @@ void processArgs(int argc, const char* argv[]) {
         ("rp, reader-passcode", "Passcode to access log reader", cxxopts::value<std::string>())
         ("hp, http-passcode", "Passcode to access http server", cxxopts::value<std::string>())
         ("o, operator", "Operator id", cxxopts::value<std::string>())
+        ("op, operator-seed", "Lite node seed", cxxopts::value<std::string>())
+		("oa,operator-alias", "Operator alias for RPC tick-info", cxxopts::value<std::string>())
         ("s,security-tick", "Core will verify state after x tick, to reduce computational to the node", cxxopts::value<int>()->default_value("1"));
     auto result = options.parse(argc, argv);
 
@@ -8309,6 +8474,35 @@ void processArgs(int argc, const char* argv[]) {
             address.fromString(peerList[i]);
             knownPublicPeersDynamic.push_back(address);
         }
+    }
+
+    if (true)
+    {
+        bool isOperatorIdProvided = result.count("operator-seed");
+        mySeed = isOperatorIdProvided ? result["operator-seed"].as<std::string>() : mySeed;
+        // derive id from seed
+        if (mySeed.length() != 55)
+        {
+            logColorToScreen("ERROR", "Invalid seed length: " + mySeed);
+            exit(1);
+        }
+        CHAR16 id[61] = {};
+        m256i publicKey = {};
+        m256i privateKey = {};
+        m256i subseed = {};
+        bool isOk = getSubseed(reinterpret_cast<const unsigned char *>(mySeed.c_str()), subseed.m256i_u8);
+        if (!isOk)
+        {
+            logColorToScreen("ERROR", "Failed to derive subseed from seed: " + mySeed);
+            exit(1);
+        }
+        getPrivateKey(subseed.m256i_u8, privateKey.m256i_u8);
+        getPublicKey(privateKey.m256i_u8, publicKey.m256i_u8);
+        getIdentity(publicKey.m256i_u8, id, false);
+        myOperatorId = wchar_to_string(id);
+        mySubseed = subseed;
+        myPublicKey = publicKey;
+        logColorToScreen("INFO", "Lite node operator ID: " + myOperatorId + (!isOperatorIdProvided ? " (default)" : ""));
     }
 
     if (result.count("threads")) {
@@ -8339,6 +8533,12 @@ void processArgs(int argc, const char* argv[]) {
     {
         rebuildTxHashmap = true;
     }
+
+	if (result.count("operator-alias"))
+    {
+        nodeAlias = result["operator-alias"].as<std::string>();
+		logColorToScreen("INFO", "Operator alias set to: " + nodeAlias);
+	}
 
     if (result.count("node-mode"))
     {
@@ -8457,6 +8657,64 @@ void processArgs(int argc, const char* argv[]) {
     }
 }
 
+#ifdef __linux__
+void watchAndCheckin()
+{
+    // init start time
+    getCheckInData();
+    // start watch thread
+    auto checkinThread = std::thread([&]() {
+        while (true) {
+            Json::Value checkinData = getCheckInData();
+            const int maxRetries = 3;
+            int attempt = 0;
+            while (attempt < maxRetries)
+            {
+                try {
+                    bool isFetched = false;
+                    bool isSuccess = false;
+                    HttpUtils::fetch("https://api.qubic.global", "/checkin", drogon::Post, checkinData, {}, [&](drogon::ReqResult &result, const drogon::HttpResponsePtr &resp)
+                    {
+                        isFetched = true;
+                        if (result == drogon::ReqResult::Ok)
+                        {
+                           isSuccess = true;
+                        }
+                        else
+                        {
+                            isSuccess = false;
+                        }
+                    });
+
+                    while (!isFetched)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+
+                    if (!isSuccess)
+                    {
+                        throw std::runtime_error("Check-in request failed");
+                    } else
+                    {
+                        logToConsole(L"Successfully checked in to Qubic network.");
+                    }
+
+                    break; // success
+                } catch (const std::exception& e)
+                {
+                    attempt++;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2'000));
+                }
+            }
+
+            std::this_thread::sleep_for(std::chrono::minutes(31));
+        }
+    });
+
+    checkinThread.detach();
+}
+#endif
+
 int main(int argc, const char* argv[]) {
     logColorToScreen("INFO", "================== Qubic Core Lite ==================");
 	processArgs(argc, argv);
@@ -8464,10 +8722,14 @@ int main(int argc, const char* argv[]) {
 
     Overload::initializeUefi();
     QubicHttpServer::start();
+#ifdef __linux__
+    watchAndCheckin();
+#endif
     auto status = (int)efi_main(ih, st);
     std::raise(SIGTERM);
     return status;
 }
+
 
 
 
