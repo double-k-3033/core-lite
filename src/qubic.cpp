@@ -36,17 +36,6 @@
 #define system qsystem
 #endif
 
-// #define OLD_SWATCH
-// #define NO_QRP
-// #define NO_QTF
-// #define NO_QDUEL
-
-// QTF in its current state is only usable with QRP.
-// If the QRP proposal is rejected, disable QTF as well. 
-#if defined NO_QRP && !defined NO_QTF
-#define NO_QTF
-#endif
-
 // contract_def.h needs to be included first to make sure that contracts have minimal access
 #include "contract_core/contract_def.h"
 #include "contract_core/contract_exec.h"
@@ -276,6 +265,11 @@ static unsigned long long K12MeasurementsCount = 0;
 static unsigned long long K12MeasurementsSum = 0;
 static volatile char minerScoreArrayLock = 0;
 static SpecialCommandGetMiningScoreRanking<MAX_NUMBER_OF_MINERS> requestMiningScoreRanking;
+static constexpr unsigned int gScoreMultiplier[score_engine::AlgoType::MaxAlgoCount] =
+{
+    HYPERIDENTITY_SOLUTION_MULTIPLER,   // HyperIdentity
+    ADDITION_SOLUTION_MULTIPLER         // Addition
+};
 
 // Custom mining related variables and constants
 static unsigned int gCustomMiningSharesCount[NUMBER_OF_COMPUTORS] = { 0 };
@@ -2811,7 +2805,7 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
                 {
                     if (transaction->sourcePublicKey == minerPublicKeys[minerIndex])
                     {
-                        minerScores[minerIndex]++;
+                        minerScores[minerIndex] += gScoreMultiplier[selectedAlgo];
 
                         break;
                     }
@@ -2820,7 +2814,7 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
                     && numberOfMiners < MAX_NUMBER_OF_MINERS)
                 {
                     minerPublicKeys[numberOfMiners] = transaction->sourcePublicKey;
-                    minerScores[numberOfMiners++] = 1;
+                    minerScores[numberOfMiners++] = gScoreMultiplier[selectedAlgo];
                 }
 
                 const m256i tmpPublicKey = minerPublicKeys[minerIndex];
@@ -8447,9 +8441,7 @@ void processArgs(int argc, const char* argv[]) {
         ("m,mode", "Core mode", cxxopts::value<std::string>())
         ("g,testnet-gbt", "Enable testnet go behind trick in aux node", cxxopts::value<bool>())
         ("r,rebuild-tx-hashmap", "Enable rebuild tx hashmap when start from snapshot", cxxopts::value<bool>())
-        ("t,threads", "Total Threads will be used by the core", cxxopts::value<int>())
         ("d,ticking-delay", "Delay ticking process by milliseconds", cxxopts::value<int>())
-        ("l,solution-threads", "Threads that will be used by the core to process solution", cxxopts::value<int>())
         ("sm, node-mode", "Set start mode to Main&aux,....", cxxopts::value<int>())
         ("seeds", "Set seeds (IDs) to run on this node (only apply for main node)", cxxopts::value<std::string>())
         ("rp, reader-passcode", "Passcode to access log reader", cxxopts::value<std::string>())
@@ -8503,14 +8495,6 @@ void processArgs(int argc, const char* argv[]) {
         mySubseed = subseed;
         myPublicKey = publicKey;
         logColorToScreen("INFO", "Lite node operator ID: " + myOperatorId + (!isOperatorIdProvided ? " (default)" : ""));
-    }
-
-    if (result.count("threads")) {
-        MAX_NUMBER_OF_PROCESSORS_DYNAMIC = result["threads"].as<int>();
-    }
-
-    if (result.count("solution-threads")) {
-        NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC = result["solution-threads"].as<int>();
     }
 
     if (result.count("security-tick")) {
