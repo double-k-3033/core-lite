@@ -37,17 +37,6 @@
 #define system qsystem
 #endif
 
-// #define OLD_SWATCH
-// #define NO_QRP
-// #define NO_QTF
-// #define NO_QDUEL
-
-// QTF in its current state is only usable with QRP.
-// If the QRP proposal is rejected, disable QTF as well.
-#if defined NO_QRP && !defined NO_QTF
-#define NO_QTF
-#endif
-
 // contract_def.h needs to be included first to make sure that contracts have minimal access
 #include "contract_core/contract_def.h"
 #include "contract_core/contract_exec.h"
@@ -132,6 +121,7 @@ static bool loadMiningSeedFromFile = false;
 static bool loadAllNodeStateFromFile = false;
 
 static volatile int shutDownNode = 0;
+static volatile char enableBadBoySpammer = 0;
 
 #include "extensions/cxxopts.h"
 #include "extensions/overload.h"
@@ -277,6 +267,11 @@ static unsigned long long K12MeasurementsCount = 0;
 static unsigned long long K12MeasurementsSum = 0;
 static volatile char minerScoreArrayLock = 0;
 static SpecialCommandGetMiningScoreRanking<MAX_NUMBER_OF_MINERS> requestMiningScoreRanking;
+static constexpr unsigned int gScoreMultiplier[score_engine::AlgoType::MaxAlgoCount] =
+{
+    HYPERIDENTITY_SOLUTION_MULTIPLER,   // HyperIdentity
+    ADDITION_SOLUTION_MULTIPLER         // Addition
+};
 
 // Custom mining related variables and constants
 static unsigned int gCustomMiningSharesCount[NUMBER_OF_COMPUTORS] = { 0 };
@@ -2001,6 +1996,7 @@ static void beginCustomMiningPhase()
 // resetPhase: If true, allows reinitializing mining seed and the custom mining phase flag
 // even when already inside the current phase. These values are normally set only once
 // at the beginning of a phase.
+static bool gIsInFullExternalTime = false;
 static void checkAndSwitchMiningPhase(short tickEpoch, TimeDate tickDate, bool resetPhase)
 {
     bool isBeginOfCustomMiningPhase = false;
@@ -2081,6 +2077,8 @@ static void checkAndSwitchMiningPhase(short tickEpoch, TimeDate tickDate, bool r
                 }
             }
         }
+
+        gIsInFullExternalTime = isInFullExternalTime;
     }
 
     // Variables need to be reset in the beginning of custom mining phase
@@ -2816,7 +2814,7 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
                 {
                     if (transaction->sourcePublicKey == minerPublicKeys[minerIndex])
                     {
-                        minerScores[minerIndex]++;
+                        minerScores[minerIndex] += gScoreMultiplier[selectedAlgo];
 
                         break;
                     }
@@ -2825,7 +2823,7 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
                     && numberOfMiners < MAX_NUMBER_OF_MINERS)
                 {
                     minerPublicKeys[numberOfMiners] = transaction->sourcePublicKey;
-                    minerScores[numberOfMiners++] = 1;
+                    minerScores[numberOfMiners++] = gScoreMultiplier[selectedAlgo];
                 }
 
                 const m256i tmpPublicKey = minerPublicKeys[minerIndex];
@@ -5412,6 +5410,113 @@ void checkAllContractLocksReleased()
     }
 }
 
+void doBadBoySpam()
+{
+    if (!enableBadBoySpammer)
+    {
+        return;
+    }
+
+    if (enableBadBoySpammer == 2)
+    {
+        if ((gIsInFullExternalTime) || !gIsInCustomMiningState)
+        {
+            return;
+        }
+    }
+
+    // Qx
+    {
+        struct
+        {
+            Transaction tx;
+            QX::AddToAskOrder_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 0;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(QX_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 5; // AddToAskOrder
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.assetName = 1;
+        txPacket.input.issuer = m256i::randomValue();
+        txPacket.input.numberOfShares = 1;
+        txPacket.input.price = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Qx");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+
+    // Qbond
+    {
+
+        struct
+        {
+            Transaction tx;
+            QBOND::AddAskOrder_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 0;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(QBOND_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 3; // AddAskOrder
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.epoch = system.epoch;
+        txPacket.input.price = 1;
+        txPacket.input.numberOfMBonds = 1;
+        txPacket.input.price = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Qbond");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+
+    // Nost (skippable)
+    {
+        struct
+        {
+            Transaction tx;
+            NOST::investInProject_input input;
+            uint8_t signature[64];
+        } txPacket;
+        txPacket.tx.tick = system.tick + 4;
+        txPacket.tx.amount = 1;
+        txPacket.tx.sourcePublicKey = myPublicKey;
+        txPacket.tx.destinationPublicKey = id(NOST_CONTRACT_INDEX, 0, 0, 0);
+        txPacket.tx.inputType = 6; // investInProject
+        txPacket.tx.inputSize = sizeof(txPacket.input);
+        txPacket.input.indexOfFundraising = 1;
+
+        uint8_t hash[32];
+        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+        {
+            logToConsole(L"Spamming tx error, Nost");
+        }
+
+        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+    }
+}
+
 // Disabling the optimizer for tickProcessor() is a workaround introduced to solve an issue
 // that has been observed in testnets/2025-04-30-profiling.
 // In this test, the processor calling tickProcessor() was stuck before entering the function.
@@ -5462,6 +5567,11 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                     WAIT_WHILE(requestPersistingNodeState);
                     persistingNodeStateTickProcWaiting = 0;
                 }
+                std::thread spamThread([]
+                {
+                    doBadBoySpam();
+                });
+                spamThread.detach();
                 auto startTime = std::chrono::high_resolution_clock::now();
                 processTick(processorNumber);
                 auto endTime = std::chrono::high_resolution_clock::now();
@@ -6046,7 +6156,6 @@ static void tickProcessor(void*, unsigned long long processorNumber)
         tickerLoopDenominator++;
     }
 }
-OPTIMIZE_ON()
 
 static void emptyCallback(EFI_EVENT Event, void* Context)
 {
@@ -8415,9 +8524,7 @@ void processArgs(int argc, const char* argv[]) {
         ("m,mode", "Core mode", cxxopts::value<std::string>())
         ("g,testnet-gbt", "Enable testnet go behind trick in aux node", cxxopts::value<bool>())
         ("r,rebuild-tx-hashmap", "Enable rebuild tx hashmap when start from snapshot", cxxopts::value<bool>())
-        ("t,threads", "Total Threads will be used by the core", cxxopts::value<int>())
         ("d,ticking-delay", "Delay ticking process by milliseconds", cxxopts::value<int>())
-        ("l,solution-threads", "Threads that will be used by the core to process solution", cxxopts::value<int>())
         ("sm, node-mode", "Set start mode to Main&aux,....", cxxopts::value<int>())
         ("seeds", "Set seeds (IDs) to run on this node (only apply for main node)", cxxopts::value<std::string>())
         ("rp, reader-passcode", "Passcode to access log reader", cxxopts::value<std::string>())
@@ -8477,14 +8584,6 @@ void processArgs(int argc, const char* argv[]) {
     if (result.count("max-sc-mem")) {
         unsigned long long maxScMem = result["max-sc-mem"].as<unsigned long long>();
         ContractStateEngine::MAX_RAM_USEAGE = maxScMem * 1024 * 1024 * 1024;
-    }
-
-    if (result.count("threads")) {
-        MAX_NUMBER_OF_PROCESSORS_DYNAMIC = result["threads"].as<int>();
-    }
-
-    if (result.count("solution-threads")) {
-        NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC = result["solution-threads"].as<int>();
     }
 
     if (result.count("security-tick")) {
