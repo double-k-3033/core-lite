@@ -21,6 +21,8 @@
 #include <unordered_map>
 #include <list>
 
+std::function<void()>engineCustomeActionCallback = nullptr;
+
 TEST(K12EngineTest, GeneralTest) {
     size_t ONE_GB = 1024 * 1024 * 1024 - 64;
     unsigned char *state = new unsigned char[ONE_GB];
@@ -149,4 +151,45 @@ TEST(K12EngineTest, ContractEngineTest)
     *((size_t*)(contractBuffer + (engine->getMaxChunks()-1) * K12_chunkSize)) = 0;
     val = *((size_t*)(contractBuffer + (engine->getMaxChunks()-1) * K12_chunkSize));
     EXPECT_EQ(val, 0);
+}
+
+TEST(K12EngineTest, UserfaulFDRaceContion)
+{
+    unsigned char *contractBuffer;
+    size_t contractSize = 1024 * 1024 * 1024 + 65; // 1 GB
+    ContractStateEngine::create(&contractBuffer, contractSize, 1);
+    auto engine = ContractStateEngine::getEngine(1);
+    engine->registerUserFaultFD();
+    for (size_t i = 0; i < contractSize; i+=K12_chunkSize)
+    {
+        if (i + K12_chunkSize > contractSize)
+        {
+            break;
+        }
+        *((size_t*)(contractBuffer + i)) = i;
+    }
+    *((size_t*)(contractBuffer + (engine->getMaxChunks()-1) * K12_chunkSize)) = (engine->getMaxChunks()-1) * K12_chunkSize;
+
+    // engineCustomeActionCallback = []() {
+    //     std::cout << "Custom Action Callback" << std::endl;
+    //     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    // };
+
+    //engine->flushAllChunksToDisk();
+    engine->reprotectWriteRegion();
+    engine->reprotectReadRegion();
+
+    // concept: thread 1 access 4kb page 0, thread 2 access 4kb page 1, both cause userfaultfd page fault at the same time
+    // std::thread thread1([&engine, &contractBuffer]() {
+    //     std::cout << "Thread 1 accessing page 0" << std::endl;
+    //     size_t val = *((size_t*)contractBuffer) = 0;
+    //     EXPECT_EQ(val, 0);
+    // });
+    // std::thread thread2([&engine, &contractBuffer]() {
+    //     std::cout << "Thread 2 accessing page 0" << std::endl;
+    //     size_t val = *((size_t*)(contractBuffer)) = 0;
+    //     EXPECT_EQ(val, 0); // still same page in term of k12 chunk size (but different system page)
+    // });
+    // thread1.join();
+    // thread2.join();
 }

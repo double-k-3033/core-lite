@@ -1,7 +1,11 @@
 #pragma once
 
+#include <linux/userfaultfd.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+
 #ifndef UFFDIO_CONTINUE_MODE_WP
-#define UFFDIO_CONTINUE_MODE_WP ((__u64)1<<1)
+#define UFFDIO_CONTINUE_MODE_WP ((__u64)1 << 1)
 #endif
 
 class UserFaultFD {

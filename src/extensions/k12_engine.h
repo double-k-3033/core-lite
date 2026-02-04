@@ -2,13 +2,15 @@
 
 #define _GNU_SOURCE
 #include "contract_core/contract_def.h"
-#include <K12/kangaroo_twelve_xkcp.h>
 #include "extensions/utils.h"
+#include "userfaultfd.h"
+#include <K12/kangaroo_twelve_xkcp.h>
 #include <cstddef>
-#include <fcntl.h>
 #include <cstring>
+#include <fcntl.h>
 #include <iostream>
 #include <linux/userfaultfd.h>
+#include <list>
 #include <mutex>
 #include <stdio.h>
 #include <sys/ioctl.h>
@@ -16,10 +18,13 @@
 #include <sys/poll.h>
 #include <thread>
 #include <unistd.h>
-#include <vector>
 #include <unordered_map>
-#include <list>
-#include "userfaultfd.h"
+#include <vector>
+#include <functional>
+
+#ifdef LITE_ENGINE_DEBUG
+extern std::function<void()> engineCustomeActionCallback;
+#endif
 
 class K12Engine
 {
@@ -465,8 +470,13 @@ public:
                     // if there is only 1 page left (system memory page) then just need to cover to the last system page (cover full K12 chunk will go beyond the state size)
                     size_t lenRange = std::min(paddedSize - (chunkIndex * (size_t)K12_chunkSize), (size_t)K12_chunkSize);
 
+#ifdef LITE_ENGINE_DEBUG
+                    if (engineCustomeActionCallback) {
+                        engineCustomeActionCallback();
+                    }
+#endif
+
                     {
-                        std::lock_guard<std::mutex> lock(faultLock);
                         // handle write-protect page fault
                         if (is_wp)
                         {
