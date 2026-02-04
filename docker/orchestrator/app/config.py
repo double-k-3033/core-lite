@@ -116,6 +116,12 @@ class DownloaderConfig(BaseModel):
     s3_secret_key: str = ""
 
 
+class CleanupConfig(BaseModel):
+    enabled: bool = True
+    interval_seconds: int = 3600     # run cleanup every hour
+    keep_epochs: int = 1             # keep N old epochs alongside the current one
+
+
 class AlertingConfig(BaseModel):
     enabled: bool = False
     webhook_url: str = ""
@@ -182,6 +188,7 @@ class OrchestratorConfig(BaseSettings):
     source: SourceConfig = Field(default_factory=SourceConfig)
     downloader: DownloaderConfig = Field(default_factory=DownloaderConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
+    cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
 
     def get_peers_list(self) -> list[str]:
         if not self.peers:

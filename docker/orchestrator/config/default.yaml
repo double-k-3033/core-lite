@@ -87,6 +87,12 @@ downloader:
   retry_count: 5
   retry_delay_seconds: 60
 
+# Cleanup (periodic removal of old state files and temp artefacts)
+cleanup:
+  enabled: true
+  interval_seconds: 3600            # run cleanup every hour
+  keep_epochs: 1                    # keep N old epochs alongside the current one
+
 # Alerting
 alerting:
   enabled: false

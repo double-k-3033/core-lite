@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.alerting import AlertManager
+from app.cleanup import Cleanup
 from app.config import OrchestratorConfig, load_config
 from app.downloaders import create_downloader
 from app.epoch_service import EpochService
@@ -382,6 +383,20 @@ class Orchestrator:
                 )
             )
             logger.info("Source mode: snapshot cycle enabled")
+
+        # Cleanup task (periodic removal of old state files)
+        if self._config.cleanup.enabled:
+            cleanup = Cleanup(
+                state_manager=self._state_manager,
+                interval_seconds=self._config.cleanup.interval_seconds,
+                keep_epochs=self._config.cleanup.keep_epochs,
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    cleanup.run(self._shutdown_event),
+                    name="cleanup",
+                )
+            )
 
         # Management API (always)
         self._management_api = ManagementAPI(
