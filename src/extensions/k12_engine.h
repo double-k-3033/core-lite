@@ -563,6 +563,11 @@ public:
                                     if (errno != EEXIST)
                                     {
                                         std::cout << "Contract " << contractIndex << ": UFFDIO_CONTINUE failed due to unexpected error (cannot ignored)\n";
+                                    } else
+                                    {
+                                        std::cout << "Contract " << contractIndex << ": UFFDIO_CONTINUE failed due to EEXIST (page already present), skip continue operation\n";
+                                        markChunkChanged(chunkIndex); // mark changed to be safe
+                                        break;
                                     }
                                     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                                 }
