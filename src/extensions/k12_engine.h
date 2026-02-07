@@ -577,6 +577,15 @@ public:
                                     {
                                         std::cout << "Contract " << contractIndex << ": UFFDIO_CONTINUE failed due to EEXIST (page already present), skip continue operation\n";
                                         markChunkChanged(chunkIndex); // mark changed to be safe
+                                        // by default, kernel wont awake the faulting thread if UFFDIO_CONTINUE fails with EEXIST
+                                        // so we need to awake it
+                                        uffdio_range range;
+                                        range.start = startRange;
+                                        range.len = lenRange;
+                                        if (ioctl(uffd.get(), UFFDIO_WAKE, &range) == -1)
+                                        {
+                                            std::cout << "Contract " << contractIndex << ": UFFDIO_WAKE failed\n";
+                                        }
                                         break;
                                     }
                                     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
