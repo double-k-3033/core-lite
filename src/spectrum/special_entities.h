@@ -9,10 +9,12 @@
 #include "private_settings.h"
 #include "public_settings.h"
 
+// static constexpr unsigned long long computorSeedsCount = sizeof(computorSeeds) / sizeof(computorSeeds[0]);
+
 GLOBAL_VAR_DECL m256i operatorPublicKey;
-// GLOBAL_VAR_DECL m256i computorSubseeds[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
-// GLOBAL_VAR_DECL m256i computorPrivateKeys[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
-// GLOBAL_VAR_DECL m256i computorPublicKeys[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
+// GLOBAL_VAR_DECL m256i computorSubseeds[computorSeedsCount];
+// GLOBAL_VAR_DECL m256i computorPrivateKeys[computorSeedsCount];
+// GLOBAL_VAR_DECL m256i computorPublicKeys[computorSeedsCount];
 GLOBAL_VAR_DECL std::vector<m256i> computorSubseeds;
 GLOBAL_VAR_DECL std::vector<m256i> computorPrivateKeys;
 GLOBAL_VAR_DECL std::vector<m256i> computorPublicKeys;
@@ -75,4 +77,17 @@ static void deinitSpecialEntities()
     {
         e = m256i::zero();
     }
+}
+
+static int computorIndex(const m256i& computor)
+{
+    for (int computorIndex = 0; computorIndex < NUMBER_OF_COMPUTORS; computorIndex++)
+    {
+        if (broadcastedComputors.computors.publicKeys[computorIndex] == computor)
+        {
+            return computorIndex;
+        }
+    }
+
+    return -1;
 }

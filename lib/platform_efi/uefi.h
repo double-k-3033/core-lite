@@ -105,6 +105,7 @@ typedef void* EFI_EVENT;
 typedef void* EFI_HANDLE;
 typedef unsigned long long EFI_PHYSICAL_ADDRESS;
 typedef unsigned long long EFI_STATUS;
+typedef unsigned long long EFI_STATUS_TYPE;
 typedef unsigned long long EFI_TPL;
 typedef unsigned long long EFI_VIRTUAL_ADDRESS;
 

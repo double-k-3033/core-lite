@@ -72,6 +72,23 @@ public:
 #define RELEASE(lock) __atomic_store_n(&lock, 0, __ATOMIC_RELEASE)
 #endif
 
+// Create an object of this class to lock until the end of the life-time of this object.
+// Usually used on stack for making sure that the lock is released, no matter which way the function is left.
+struct LockGuard
+{
+    LockGuard(volatile char& lock) : _lock(lock)
+    {
+        ACQUIRE(_lock);
+    }
+
+    ~LockGuard()
+    {
+        RELEASE(_lock);
+    }
+
+    volatile char& _lock;
+};
+
 
 #ifdef NDEBUG
 
