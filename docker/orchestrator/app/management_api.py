@@ -169,7 +169,6 @@ class ManagementAPI:
             if self._watchdog is not None:
                 self._watchdog.state.health = NodeHealth.STARTING
                 self._watchdog.state.consecutive_stuck_polls = 0
-                self._watchdog.state.consecutive_misaligned_polls = 0
                 self._watchdog.state.last_tick_change_time = time.monotonic()
 
             logger.info(

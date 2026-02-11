@@ -7,6 +7,7 @@
 #include "platform/concurrency.h"
 #include "platform/console_logging.h"
 #include "platform/debugging.h"
+#include "platform/global_var.h"
 
 #include "public_settings.h"
 #include "extensions/utils.h"
@@ -723,6 +724,7 @@ public:
     // Cleanup at node shutdown
     static void deinit()
     {
+        return;
         if (tickDataPtr)
         {
             freePool(tickDataPtr);
@@ -1465,3 +1467,5 @@ public:
         }
     } transactionsDigestAccess;
 };
+
+GLOBAL_VAR_DECL TickStorage ts;

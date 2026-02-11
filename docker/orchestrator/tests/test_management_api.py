@@ -58,7 +58,6 @@ def _make_watchdog(
     state.restart_count = 0
     state.last_restart_time = 0.0
     state.consecutive_stuck_polls = 0
-    state.consecutive_misaligned_polls = 0
     wd.state = state
     return wd
 

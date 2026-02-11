@@ -9,13 +9,15 @@
 #include "private_settings.h"
 #include "public_settings.h"
 
+static constexpr unsigned long long computorSeedsCount = sizeof(computorSeeds) / sizeof(computorSeeds[0]);
+
 GLOBAL_VAR_DECL m256i operatorPublicKey;
-// GLOBAL_VAR_DECL m256i computorSubseeds[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
-// GLOBAL_VAR_DECL m256i computorPrivateKeys[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
-// GLOBAL_VAR_DECL m256i computorPublicKeys[sizeof(computorSeeds) / sizeof(computorSeeds[0])];
-GLOBAL_VAR_DECL std::vector<m256i> computorSubseeds;
-GLOBAL_VAR_DECL std::vector<m256i> computorPrivateKeys;
-GLOBAL_VAR_DECL std::vector<m256i> computorPublicKeys;
+GLOBAL_VAR_DECL m256i computorSubseeds[computorSeedsCount];
+GLOBAL_VAR_DECL m256i computorPrivateKeys[computorSeedsCount];
+GLOBAL_VAR_DECL m256i computorPublicKeys[computorSeedsCount];
+// GLOBAL_VAR_DECL std::vector<m256i> computorSubseeds;
+// GLOBAL_VAR_DECL std::vector<m256i> computorPrivateKeys;
+// GLOBAL_VAR_DECL std::vector<m256i> computorPublicKeys;
 GLOBAL_VAR_DECL m256i arbitratorPublicKey;
 GLOBAL_VAR_DECL m256i dispatcherPublicKey;
 
@@ -30,12 +32,12 @@ static bool initSpecialEntities()
         operatorPublicKey.setRandomValue();
     }
 
-    computorSubseeds.resize(computorSeeds.size());
-    computorPrivateKeys.resize(computorSeeds.size());
-    computorPublicKeys.resize(computorSeeds.size());
-    for (unsigned int i = 0; i < computorSeeds.size(); i++)
+    // computorSubseeds.resize(computorSeeds.size());
+    // computorPrivateKeys.resize(computorSeeds.size());
+    // computorPublicKeys.resize(computorSeeds.size());
+    for (unsigned int i = 0; i < computorSeedsCount; i++)
     {
-        if (!getSubseed(reinterpret_cast<const unsigned char *>(computorSeeds[i].c_str()), computorSubseeds[i].m256i_u8))
+        if (!getSubseed(reinterpret_cast<const unsigned char *>(computorSeeds[i]), computorSubseeds[i].m256i_u8))
         {
             return false;
         }
@@ -53,26 +55,39 @@ static bool initSpecialEntities()
 
 static void deinitSpecialEntities()
 {
-    // setMem(computorSeeds, sizeof(computorSeeds), 0);
-    // setMem(computorSubseeds, sizeof(computorSubseeds), 0);
-    // setMem(computorPrivateKeys, sizeof(computorPrivateKeys), 0);
-    // setMem(computorPublicKeys, sizeof(computorPublicKeys), 0);
-    std::string _55ZeroChar = "";
-    for (int i = 0; i < 55; ++i) {
-        _55ZeroChar += static_cast<char>(0);
+    setMem(computorSeeds, sizeof(computorSeeds), 0);
+    setMem(computorSubseeds, sizeof(computorSubseeds), 0);
+    setMem(computorPrivateKeys, sizeof(computorPrivateKeys), 0);
+    setMem(computorPublicKeys, sizeof(computorPublicKeys), 0);
+    // std::string _55ZeroChar = "";
+    // for (int i = 0; i < 55; ++i) {
+    //     _55ZeroChar += static_cast<char>(0);
+    // }
+    //
+    // for (std::string &e : computorSeeds) {
+    //     e = _55ZeroChar;
+    // }
+    // for (auto &e : computorSubseeds) {
+    //     e = m256i::zero();
+    // }
+    // for (auto &e : computorPrivateKeys) {
+    //     e = m256i::zero();
+    // }
+    // for (auto &e : computorPublicKeys)
+    // {
+    //     e = m256i::zero();
+    // }
+}
+
+static int computorIndex(const m256i& computor)
+{
+    for (int computorIndex = 0; computorIndex < NUMBER_OF_COMPUTORS; computorIndex++)
+    {
+        if (broadcastedComputors.computors.publicKeys[computorIndex] == computor)
+        {
+            return computorIndex;
+        }
     }
 
-    for (std::string &e : computorSeeds) {
-        e = _55ZeroChar;
-    }
-    for (auto &e : computorSubseeds) {
-        e = m256i::zero();
-    }
-    for (auto &e : computorPrivateKeys) {
-        e = m256i::zero();
-    }
-    for (auto &e : computorPublicKeys)
-    {
-        e = m256i::zero();
-    }
+    return -1;
 }

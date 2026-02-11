@@ -12,7 +12,7 @@ The provided `cloud-init.yml` automatically:
 ## Requirements
 
 - Ubuntu 24.04 VM
-- At least 32 GB RAM (64 GB recommended)
+- At least 64 GB RAM
 - 50 GB+ SSD
 - x86_64 CPU with AVX2 support
 

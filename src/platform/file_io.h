@@ -68,7 +68,10 @@ static bool q_wfopen_s(FILE **file, const CHAR16 *fileName, const CHAR16 *direct
     return 0;
 }
 
+#ifndef NDEBUG
 static void addDebugMessage(const CHAR16* msg);
+#endif
+
 static long long getFileSize(CHAR16* fileName, CHAR16* directory = NULL)
 {
 #ifdef NO_UEFI

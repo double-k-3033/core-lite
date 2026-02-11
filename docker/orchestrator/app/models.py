@@ -69,7 +69,6 @@ class NodeState:
     last_tick_info: Optional[TickInfo] = None
     last_tick_change_time: float = 0.0
     consecutive_stuck_polls: int = 0
-    consecutive_misaligned_polls: int = 0
     process_pid: Optional[int] = None
     restart_count: int = 0
     last_restart_time: float = 0.0

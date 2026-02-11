@@ -562,6 +562,18 @@ struct Overload {
             return EFI_SUCCESS;
         }
 
+        // used for case bs->CreateEvent(0, TPL_CALLBACK, NULL, NULL, &closeToken.CompletionToken.Event); in closePeer()
+        if (Type == 0)
+        {
+            *Event = new unsigned long long;
+            EventData eventData;
+            eventData.event = *Event;
+            eventData.context = NotifyContext;
+            eventData.notifyFunction = NotifyFunction;
+            eventDataMap[(unsigned long long) * Event] = eventData;
+            return EFI_SUCCESS;
+        }
+
         logToConsole(L"Create Event IS NOT IMPLEMENTED");
         return EFI_UNSUPPORTED;
     }
@@ -576,6 +588,10 @@ struct Overload {
 
         logToConsole(L"No event found in map");
         return EFI_NOT_FOUND;
+    }
+
+    static EFI_STATUS CheckEvent(IN EFI_EVENT Event) {
+        return EFI_SUCCESS;
     }
 
     ////////////// SystemTable Implementation //////////////
@@ -732,8 +748,7 @@ struct Overload {
     }
 
     static EFI_STATUS Close(IN void* This, IN EFI_TCP4_CLOSE_TOKEN* CloseToken) {
-        logToConsole(L"Close IS NOT IMPLEMENTED");
-        return EFI_UNSUPPORTED;
+        return EFI_SUCCESS;
     }
 
     static EFI_STATUS Cancel(IN void* This, IN EFI_TCP4_COMPLETION_TOKEN* Token OPTIONAL) {
@@ -1167,6 +1182,7 @@ struct Overload {
         rs->SetTime = Overload::SetTime;
 
         ////// BootServices Implementation ///////
+        bs->SetMem = setMem;
         bs->Stall = Overload::Stall;
         bs->SetWatchdogTimer = Overload::SetWatchdogTimer;
         bs->LocateProtocol = Overload::LocateProtocol;
@@ -1176,6 +1192,7 @@ struct Overload {
         bs->LocateHandleBuffer = Overload::LocateHandleBuffer;
         bs->CreateEvent = Overload::CreateEvent;
         bs->CloseEvent = Overload::CloseEvent;
+        bs->CheckEvent = Overload::CheckEvent;
 
         ///// SystemTable Implementation /////
         st->ConOut->ClearScreen = Overload::ClearScreen;

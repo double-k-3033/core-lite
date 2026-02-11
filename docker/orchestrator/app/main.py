@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+import shutil
 import signal
 import time
 from pathlib import Path
 from typing import Optional
+
+import aiohttp
 
 from app.alerting import AlertManager
 from app.cleanup import Cleanup
 from app.config import OrchestratorConfig, load_config
 from app.downloaders import create_downloader
 from app.epoch_service import EpochService
+from app.local_snapshot_saver import LocalSnapshotSaver
 from app.logging_config import setup_logging
 from app.management_api import ManagementAPI
 from app.models import EpochInfo, NodeHealth, OrchestratorMode
@@ -59,6 +64,9 @@ class Orchestrator:
         try:
             # Initialize components
             self._init_components()
+
+            # Ensure the volume has the binary from the current image
+            self._install_binary()
 
             # Read local binary version
             self._local_version = EpochService.read_local_version(
@@ -122,8 +130,16 @@ class Orchestrator:
 
     def _init_components(self) -> None:
         """Initialize all orchestrator components."""
+        # Generate random HTTP passcode if not configured
+        # Format: 4 random numbers separated by dashes (e.g., "123-456-789-012")
+        if not self._config.http_passcode:
+            passcode = "-".join(str(secrets.randbelow(10**12)) for _ in range(4))
+            # Update config so build_qubic_args() will include it
+            object.__setattr__(self._config, "http_passcode", passcode)
+            logger.info("Generated random HTTP passcode for node API authentication")
+
         self._node_client = NodeClient(
-            passcode=self._config.http_passcode or "",
+            passcode=self._config.http_passcode,
         )
         self._alert_manager = AlertManager(self._config.alerting)
 
@@ -148,6 +164,91 @@ class Orchestrator:
             working_dir=self._data_dir,
         )
 
+    def _install_binary(self) -> None:
+        """Copy binary and metadata from the image staging dir to the data volume.
+
+        Docker only populates a named volume on first use.  When Watchtower
+        (or any updater) pulls a new image, the old binary persists on the
+        volume.  This method ensures the volume always has the binary that
+        shipped with the current image.
+
+        The copy is skipped when the volume already has a binary whose
+        version is equal to or newer than the staged one.
+        """
+        staging_dir = Path(self._config.binary_staging_dir)
+        if not staging_dir.is_dir():
+            logger.debug(
+                f"No staging directory at {staging_dir}, "
+                "skipping binary install"
+            )
+            return
+
+        staged_ver = EpochService.read_local_version(
+            str(staging_dir / "version.txt")
+        )
+        local_ver = EpochService.read_local_version(
+            str(self._data_dir / "version.txt")
+        )
+
+        # Compare version and file modification time — a recompiled binary
+        # with the same version but a newer mtime should still be installed.
+        staged_bin = staging_dir / "Qubic"
+        local_bin = self._data_dir / "Qubic"
+        staged_newer = False
+        if staged_bin.exists() and local_bin.exists():
+            staged_newer = staged_bin.stat().st_mtime > local_bin.stat().st_mtime
+
+        if staged_ver and local_ver and local_ver >= staged_ver and not staged_newer:
+            logger.info(
+                f"Binary on volume "
+                f"({EpochService.format_version(local_ver)}) is "
+                f"up-to-date with staged "
+                f"({EpochService.format_version(staged_ver)}), "
+                "skipping install"
+            )
+            return
+
+        staged_fmt = (
+            EpochService.format_version(staged_ver) if staged_ver else "?"
+        )
+        local_fmt = (
+            EpochService.format_version(local_ver) if local_ver else "none"
+        )
+        logger.info(
+            f"Updating binary on volume: {local_fmt} -> {staged_fmt}"
+        )
+
+        for name in ("Qubic", "epoch.txt", "version.txt"):
+            src = staging_dir / name
+            if not src.exists():
+                continue
+            dst = self._data_dir / name
+            shutil.copy2(src, dst)
+            if name == "Qubic":
+                dst.chmod(0o755)
+            logger.info(f"Installed {name} from image staging dir")
+
+    @staticmethod
+    async def _get_public_ip() -> Optional[str]:
+        """Resolve the node's public IP via an external service."""
+        services = [
+            "https://api.ipify.org",
+            "https://ifconfig.me/ip",
+            "https://icanhazip.com",
+        ]
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for url in services:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            ip = (await resp.text()).strip()
+                            if ip:
+                                return ip
+                except Exception:
+                    continue
+        return None
+
     async def _discover_epoch(self) -> EpochInfo:
         """Step 3: Query epoch info API or fall back to compiled epoch."""
         logger.info("Discovering current epoch information...")
@@ -167,6 +268,15 @@ class Orchestrator:
         configured_peers = set(self._config.get_peers_list())
         api_peers = set(epoch_info.peers)
         all_peers = configured_peers | api_peers
+
+        # Add the node's own public IP so it can find itself in the network
+        public_ip = await self._get_public_ip()
+        if public_ip:
+            logger.info(f"Public IP: {public_ip}")
+            all_peers.add(public_ip)
+        else:
+            logger.warning("Could not determine public IP")
+
         epoch_info.peers = list(all_peers)
 
         return epoch_info
@@ -400,6 +510,20 @@ class Orchestrator:
                     name="cleanup",
                 )
             )
+
+        # Local snapshot saver (periodic F8-style saves)
+        if self._config.local_snapshot.enabled:
+            local_snapshot_saver = LocalSnapshotSaver(
+                config=self._config.local_snapshot,
+                node_client=self._node_client,
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    local_snapshot_saver.run(self._shutdown_event),
+                    name="local_snapshot_saver",
+                )
+            )
+            logger.info("Local snapshot saver enabled")
 
         # Management API (always)
         self._management_api = ManagementAPI(

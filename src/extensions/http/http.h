@@ -92,13 +92,13 @@ private:
             {
                 Json::Value json;
                 Json::Value idsJson(Json::arrayValue);
-                for (int i = 0; i < computorSeeds.size(); i++)
+                for (int i = 0; i < computorSeedsCount; i++)
                 {
                     CHAR16 id[61] = {};
                     m256i publicKey = {};
                     m256i privateKey = {};
                     m256i subseed = {};
-                    bool isOk = getSubseed(reinterpret_cast<const unsigned char *>(computorSeeds[i].c_str()), subseed.m256i_u8);
+                    bool isOk = getSubseed(reinterpret_cast<const unsigned char *>(computorSeeds[i]), subseed.m256i_u8);
                     if (!isOk)
                         continue;
                     getPrivateKey(subseed.m256i_u8, privateKey.m256i_u8);

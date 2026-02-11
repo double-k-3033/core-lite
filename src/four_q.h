@@ -43,11 +43,14 @@
 #define C4 0x6BC57DEF56CE8877
 
 #ifdef __AVX512F__
+namespace FourQ
+{
 static m256i B1, B2, B3, B4, C;
+}
 
 static void initAVX512FourQConstants()
 {
-
+    using namespace FourQ;
     B1 = _mm256_set_epi64x(B14, B13, B12, B11);
     B2 = _mm256_set_epi64x(B24, B23, B22, B21);
     B3 = _mm256_set_epi64x(B34, B33, B32, B31);
@@ -820,7 +823,7 @@ static void R1_to_R3(point_extproj_t P, point_extproj_precomp_t Q)
     fp2add1271(P->x, P->y, Q->xy);         // XQ = (X1+Y1) 
     fp2sub1271(P->y, P->x, Q->yx);         // YQ = (Y1-X1) 
     fp2mul1271(P->ta, P->tb, Q->t2);       // TQ = T1
-    *((m256i*) & Q->z2) = *((m256i*) & P->z);              // ZQ = Z1 
+    *((m256i*) & Q->z2) = *((m256i*) & P->z);              // ZQ = Z1
 }
 
 static void R2_to_R4(point_extproj_precomp_t P, point_extproj_t Q)
@@ -1279,6 +1282,14 @@ static void decompose(unsigned long long* k, unsigned long long* scalars)
     const unsigned long long a3 = mul_truncate(k, (unsigned long long*)ell3);
     const unsigned long long a4 = mul_truncate(k, (unsigned long long*)ell4);
 
+#ifdef __AVX512F__
+    using namespace FourQ;
+    * ((__m256i*)scalars) = _mm256_add_epi64(_mm256_add_epi64(_mm256_add_epi64(_mm256_add_epi64(_mm256_mullo_epi64(_mm256_set1_epi64x(a1), B1), _mm256_mullo_epi64(_mm256_set1_epi64x(a2), B2)), _mm256_mullo_epi64(_mm256_set1_epi64x(a3), B3)), _mm256_mullo_epi64(_mm256_set1_epi64x(a4), B4)), C);
+    if (!((scalars[0] += k[0]) & 1))
+    {
+        *((__m256i*)scalars) = _mm256_sub_epi64(*((__m256i*)scalars), B4);
+    }
+#else
     scalars[0] = a1 * B11 + a2 * B21 + a3 * B31 + a4 * B41 + C1 + k[0];
     scalars[1] = a1 * B12 + a2 * B22 + a3 * B32 + a4 * B42 + C2;
     scalars[2] = a1 * B13 + a2 * B23 + a3 * B33 + a4 * B43 + C3;
@@ -1290,6 +1301,7 @@ static void decompose(unsigned long long* k, unsigned long long* scalars)
         scalars[2] -= B43;
         scalars[3] -= B44;
     }
+#endif
 }
 
 static void wNAF_recode(unsigned long long scalar, unsigned int w, char* digits)

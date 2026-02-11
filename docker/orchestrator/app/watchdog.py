@@ -39,6 +39,9 @@ class Watchdog:
         self._snapshot_save_start_time: float = 0.0
         self._last_epoch_api_check: float = 0.0
         self._consecutive_epoch_behind_polls: int = 0
+        # Misalignment tracking (time-based, requires same tick)
+        self._misalignment_start_time: float | None = None
+        self._misalignment_start_tick: int | None = None
 
     @property
     def state(self) -> NodeState:
@@ -110,6 +113,10 @@ class Watchdog:
         """Assess current node health."""
         # 1. Check if process is alive
         if not self._process_manager.is_running():
+            # Don't report as crashed if shutdown was intentionally requested
+            if self._process_manager.shutdown_requested:
+                logger.info("Process exited after intentional shutdown request")
+                return NodeHealth.HEALTHY  # Prevent restart
             return NodeHealth.CRASHED
 
         # 2. Try to get tick info
@@ -158,19 +165,44 @@ class Watchdog:
             self._state.last_tick_change_time = now
             self._state.consecutive_stuck_polls = 0
 
-        # 5. Check for misalignment
-        if (
+        # 5. Check for misalignment (time-based, only on same tick)
+        is_misaligned = (
             tick_info.misaligned_votes
             >= self._config.misaligned_threshold_votes
-        ):
-            self._state.consecutive_misaligned_polls += 1
-            if (
-                self._state.consecutive_misaligned_polls
-                >= self._config.misaligned_consecutive_polls
-            ):
-                return NodeHealth.MISALIGNED
+        )
+        if is_misaligned:
+            current_tick = tick_info.tick
+            if self._misalignment_start_time is None:
+                # Start tracking misalignment
+                self._misalignment_start_time = now
+                self._misalignment_start_tick = current_tick
+                logger.debug(
+                    f"Misalignment detected at tick {current_tick}, "
+                    f"votes={tick_info.misaligned_votes}"
+                )
+            elif current_tick != self._misalignment_start_tick:
+                # Tick advanced while misaligned - reset, node is progressing
+                logger.debug(
+                    f"Tick advanced during misalignment "
+                    f"({self._misalignment_start_tick} -> {current_tick}), "
+                    "resetting misalignment timer"
+                )
+                self._misalignment_start_time = now
+                self._misalignment_start_tick = current_tick
+            else:
+                # Same tick, check if threshold exceeded
+                elapsed = now - self._misalignment_start_time
+                if elapsed >= self._config.misaligned_threshold_seconds:
+                    logger.warning(
+                        f"Misaligned for {elapsed:.0f}s on tick {current_tick}"
+                    )
+                    return NodeHealth.MISALIGNED
         else:
-            self._state.consecutive_misaligned_polls = 0
+            # Not misaligned - reset tracking
+            if self._misalignment_start_time is not None:
+                logger.debug("Node aligned, resetting misalignment timer")
+            self._misalignment_start_time = None
+            self._misalignment_start_tick = None
 
         # 6. Detect epoch transitions
         if (
@@ -359,8 +391,9 @@ class Watchdog:
             await self._process_manager.restart(self._qubic_args)
             self._state.health = NodeHealth.STARTING
             self._state.consecutive_stuck_polls = 0
-            self._state.consecutive_misaligned_polls = 0
             self._consecutive_epoch_behind_polls = 0
+            self._misalignment_start_time = None
+            self._misalignment_start_tick = None
             self._state.last_tick_change_time = time.monotonic()
         except Exception as e:
             logger.error(f"Failed to restart node: {e}")

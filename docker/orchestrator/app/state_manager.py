@@ -4,6 +4,7 @@ import glob
 import hashlib
 import logging
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -80,6 +81,37 @@ def _compress_file_worker(
         "file_size": file_size,
         "compressed_size": compressed_size,
     }
+
+
+def _extract_batch_worker(
+    zip_path: str,
+    entry_names: list[str],
+    dest_dir: str,
+) -> list[dict]:
+    """Extract a batch of files from a ZIP archive (thread-safe).
+
+    Each worker opens its own ZipFile handle once and extracts all
+    assigned entries.  This avoids re-reading the central directory
+    for every file.  zlib decompression releases the GIL.
+    """
+    results = []
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for entry_name in entry_names:
+            target = Path(dest_dir) / entry_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            file_size = 0
+            with zf.open(entry_name) as src, open(target, "wb") as dst:
+                while True:
+                    chunk = src.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    file_size += len(chunk)
+
+            results.append({"name": entry_name, "size": file_size})
+    return results
+
 
 # Files the Qubic node needs per epoch
 CRITICAL_FILES = ["spectrum", "universe"]
@@ -182,10 +214,50 @@ class StateManager:
                 zip_path.unlink()
 
     def _extract_and_rename(self, zip_path: Path, epoch: int) -> None:
-        """Extract zip and rename files to match the epoch number."""
+        """Extract zip in parallel and rename files to match the epoch."""
         logger.info(f"Extracting {zip_path} to {self._data_dir}")
+
         with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(self._data_dir)
+            entries = [i.filename for i in zf.infolist() if not i.is_dir()]
+
+        workers = min(len(entries) or 1, os.cpu_count() or 4)
+        logger.info(
+            f"Extracting {len(entries)} files with {workers} workers"
+        )
+
+        # Split entries into batches so each worker opens the zip once
+        batch_size = max(1, (len(entries) + workers - 1) // workers)
+        batches = [
+            entries[i : i + batch_size]
+            for i in range(0, len(entries), batch_size)
+        ]
+        logger.info(
+            f"Split into {len(batches)} batches of ~{batch_size} files"
+        )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {}
+            for batch in batches:
+                future = pool.submit(
+                    _extract_batch_worker,
+                    str(zip_path),
+                    batch,
+                    str(self._data_dir),
+                )
+                futures[future] = len(batch)
+
+            done_files = 0
+            for future in as_completed(futures):
+                try:
+                    results = future.result()
+                    done_files += len(results)
+                    logger.info(
+                        f"Extracted batch ({len(results)} files, "
+                        f"{done_files}/{len(entries)} total)"
+                    )
+                except Exception as exc:
+                    logger.error(f"Batch extraction failed: {exc}")
+                    raise
 
         # Rename files with .000 extension (or wrong epoch) to current epoch
         for path in self._data_dir.iterdir():
@@ -240,6 +312,20 @@ class StateManager:
                     if f.is_file():
                         files.append(f)
                 break
+        # Page files from SwapVirtualMemory (.pg files in subdirectories)
+        # Only include dirs whose trailing number matches the epoch
+        # e.g. td00data199, tickdata199 for epoch 199
+        for sub_dir in sorted(self._data_dir.iterdir()):
+            if not sub_dir.is_dir():
+                continue
+            if sub_dir.name.startswith("ep"):
+                continue  # already handled above
+            match = re.search(r"(\d+)$", sub_dir.name)
+            if not match or int(match.group(1)) != epoch:
+                continue
+            pg_files = sorted(sub_dir.glob("*.pg"))
+            if pg_files:
+                files.extend(pg_files)
         return files
 
     @staticmethod
@@ -466,8 +552,8 @@ class StateManager:
         )
         return archive_path
 
-    def cleanup_old_epochs(self, current_epoch: int, keep: int = 1) -> None:
-        """Remove state files from old epochs."""
+    def cleanup_old_epochs(self, current_epoch: int, keep: int = 0) -> None:
+        """Remove state files, snapshot dirs, and page dirs from old epochs."""
         for path in self._data_dir.iterdir():
             if not path.is_file():
                 continue
@@ -490,6 +576,20 @@ class StateManager:
                         shutil.rmtree(d)
                 except ValueError:
                     continue
+
+        # Clean up old page file directories (.pg swap files)
+        for d in self._data_dir.iterdir():
+            if not d.is_dir() or d.name.startswith("ep"):
+                continue
+            if not any(d.glob("*.pg")):
+                continue
+            # Extract trailing epoch number (e.g. "td00data198" -> 198)
+            match = re.search(r"(\d+)$", d.name)
+            if match:
+                dir_epoch = int(match.group(1))
+                if dir_epoch < current_epoch - keep:
+                    logger.info(f"Cleaning up old page dir: {d.name}")
+                    shutil.rmtree(d)
 
     @staticmethod
     def compute_checksum(file_path: Path) -> str:

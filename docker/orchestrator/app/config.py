@@ -53,7 +53,7 @@ class WatchdogConfig(BaseModel):
     stuck_threshold_seconds: int = 300
     stuck_consecutive_polls: int = 3
     misaligned_threshold_votes: int = 451
-    misaligned_consecutive_polls: int = 5
+    misaligned_threshold_seconds: int = 300  # 5 minutes of misalignment on the same tick
     max_restarts: int = 5
     restart_cooldown_seconds: int = 600
     crash_restart_delay_seconds: int = 10
@@ -119,7 +119,12 @@ class DownloaderConfig(BaseModel):
 class CleanupConfig(BaseModel):
     enabled: bool = True
     interval_seconds: int = 3600     # run cleanup every hour
-    keep_epochs: int = 1             # keep N old epochs alongside the current one
+    keep_epochs: int = 0             # keep N old epochs alongside the current one
+
+
+class LocalSnapshotConfig(BaseModel):
+    enabled: bool = False
+    interval_seconds: int = 3600     # save local snapshot every hour (like pressing F8)
 
 
 class AlertingConfig(BaseModel):
@@ -156,6 +161,7 @@ class OrchestratorConfig(BaseSettings):
     mode: OrchestratorMode = OrchestratorMode.NORMAL
     data_dir: str = "/qubic"
     binary_path: str = "/qubic/Qubic"
+    binary_staging_dir: str = "/opt/qubic-bin"
     log_level: str = "INFO"
     log_format: str = "json"
 
@@ -189,6 +195,7 @@ class OrchestratorConfig(BaseSettings):
     downloader: DownloaderConfig = Field(default_factory=DownloaderConfig)
     alerting: AlertingConfig = Field(default_factory=AlertingConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
+    local_snapshot: LocalSnapshotConfig = Field(default_factory=LocalSnapshotConfig)
 
     def get_peers_list(self) -> list[str]:
         if not self.peers:

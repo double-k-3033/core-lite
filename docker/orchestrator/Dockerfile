@@ -77,12 +77,15 @@ COPY docker/orchestrator/config/ /opt/orchestrator/config/
 WORKDIR /opt/orchestrator
 RUN pip install --no-cache-dir .
 
-# Copy Qubic binary and epoch metadata
+# Stage binary and metadata in a non-volume location so that container
+# image updates always bring the new binary, even when /qubic is a
+# persistent Docker volume (Docker only populates volumes on first use).
+COPY --from=builder /output/Qubic /opt/qubic-bin/Qubic
+COPY --from=builder /output/epoch.txt /opt/qubic-bin/epoch.txt
+COPY --from=builder /output/version.txt /opt/qubic-bin/version.txt
+RUN chmod +x /opt/qubic-bin/Qubic
+
 WORKDIR /qubic
-COPY --from=builder /output/Qubic /qubic/Qubic
-COPY --from=builder /output/epoch.txt /qubic/epoch.txt
-COPY --from=builder /output/version.txt /qubic/version.txt
-RUN chmod +x /qubic/Qubic
 
 # Ports: P2P mainnet (21841), P2P testnet (31841), HTTP API (41841), Management (8080)
 EXPOSE 21841 31841 41841 8080
@@ -91,6 +94,7 @@ EXPOSE 21841 31841 41841 8080
 ENV QUBIC_MODE="normal"
 ENV QUBIC_DATA_DIR="/qubic"
 ENV QUBIC_BINARY_PATH="/qubic/Qubic"
+ENV QUBIC_BINARY_STAGING_DIR="/opt/qubic-bin"
 ENV QUBIC_LOG_LEVEL="INFO"
 ENV QUBIC_LOG_FORMAT="json"
 
