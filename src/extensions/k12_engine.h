@@ -662,6 +662,16 @@ public:
         madvise(_state + startOffset, len, MADV_DONTNEED); // remove only PTE mappings, all our data still safe. next read will trigger minor fault
     }
 
+    unsigned long long touchAllPages()
+    {
+        unsigned long long sum = 0;
+        for (size_t offset = 0; offset < paddedSize; offset += SYSTEM_PAGE_SIZE)
+        {
+            sum += _state[offset];
+        }
+        return sum;
+    }
+
     int getHashAndReprotect(unsigned char* output, size_t outputByteLen)
     {
         int res = getHash(output, outputByteLen);
