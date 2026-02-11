@@ -7,22 +7,22 @@
 
 template <typename OracleInterface, typename ContractStateType, typename LocalsType>
 QPI::sint64 QPI::QpiContextProcedureCall::__qpiQueryOracle(
-	const OracleInterface::OracleQuery& query,
+	const typename OracleInterface::OracleQuery& query,
 	void (*notificationProcPtr)(const QPI::QpiContextProcedureCall& qpi, ContractStateType& state, OracleNotificationInput<OracleInterface>& input, NoData& output, LocalsType& locals),
 	unsigned int notificationProcId, 
 	uint32 timeoutMillisec
 ) const
 {
 	// check that size of oracle query, oracle reply, notification procedure locals are valid
-	static_assert(sizeof(OracleInterface::OracleQuery) <= MAX_ORACLE_QUERY_SIZE);
-	static_assert(sizeof(OracleInterface::OracleReply) <= MAX_ORACLE_REPLY_SIZE);
+	static_assert(sizeof(typename OracleInterface::OracleQuery) <= MAX_ORACLE_QUERY_SIZE);
+	static_assert(sizeof(typename OracleInterface::OracleReply) <= MAX_ORACLE_REPLY_SIZE);
 	static_assert(sizeof(LocalsType) <= MAX_SIZE_OF_CONTRACT_LOCALS);
 
 	// check that oracle interface and notification input type are as expected
-	static_assert(sizeof(QPI::OracleNotificationInput<typename OracleInterface::OracleReply>) == 16 + sizeof(OracleInterface::OracleReply));
+	static_assert(sizeof(QPI::OracleNotificationInput<typename OracleInterface::OracleReply>) == 16 + sizeof(typename OracleInterface::OracleReply));
 	static_assert(OracleInterface::oracleInterfaceIndex < OI::oracleInterfacesCount);
-	static_assert(OI::oracleInterfaces[OracleInterface::oracleInterfaceIndex].replySize == sizeof(OracleInterface::OracleReply));
-	static_assert(OI::oracleInterfaces[OracleInterface::oracleInterfaceIndex].querySize == sizeof(OracleInterface::OracleQuery));
+	static_assert(OI::oracleInterfaces[OracleInterface::oracleInterfaceIndex].replySize == sizeof(typename OracleInterface::OracleReply));
+	static_assert(OI::oracleInterfaces[OracleInterface::oracleInterfaceIndex].querySize == sizeof(typename OracleInterface::OracleQuery));
 	
 	// check contract index
 	ASSERT(this->_currentContractIndex < 0xffff);
@@ -85,7 +85,7 @@ QPI::sint64 QPI::QpiContextProcedureCall::__qpiQueryOracle(
 
 template <typename OracleInterface, typename ContractStateType, typename LocalsType>
 inline QPI::sint32 QPI::QpiContextProcedureCall::__qpiSubscribeOracle(
-	const OracleInterface::OracleQuery& query,
+	const typename OracleInterface::OracleQuery& query,
 	void (*notificationProcPtr)(const QPI::QpiContextProcedureCall& qpi, ContractStateType& state, OracleNotificationInput<OracleInterface>& input, NoData& output, LocalsType& locals),
 	QPI::uint32 notificationIntervalInMilliseconds,
 	unsigned int notificationProcId,
@@ -106,13 +106,13 @@ inline bool QPI::QpiContextProcedureCall::unsubscribeOracle(
 }
 
 template <typename OracleInterface>
-bool QPI::QpiContextFunctionCall::getOracleQuery(QPI::sint64 queryId, OracleInterface::OracleQuery& query) const
+bool QPI::QpiContextFunctionCall::getOracleQuery(QPI::sint64 queryId, typename OracleInterface::OracleQuery& query) const
 {
 	return oracleEngine.getOracleQuery(queryId, &query, sizeof(query));
 }
 
 template <typename OracleInterface>
-bool QPI::QpiContextFunctionCall::getOracleReply(QPI::sint64 queryId, OracleInterface::OracleReply& reply) const
+bool QPI::QpiContextFunctionCall::getOracleReply(QPI::sint64 queryId, typename OracleInterface::OracleReply& reply) const
 {
 	return oracleEngine.getOracleReply(queryId, &reply, sizeof(reply));
 }

@@ -41,11 +41,11 @@ static void checkNetworkMessageOracleMachineQuery(QPI::uint64 expectedOracleQuer
     EXPECT_EQ(enqueuedNetworkMessage.omQuery.queryMetadata.oracleInterfaceIndex, OracleInterface::oracleInterfaceIndex);
     EXPECT_EQ(enqueuedNetworkMessage.omQuery.queryMetadata.oracleQueryId, expectedOracleQueryId);
     EXPECT_EQ(enqueuedNetworkMessage.omQuery.queryMetadata.timeoutInMilliseconds, expectedTimeout);
-    const auto* q = (const OracleInterface::OracleQuery*)enqueuedNetworkMessage.omQuery.queryData;
-    EXPECT_TRUE(compareMem(q, &expectedQuery, sizeof(OracleInterface::OracleQuery)) == 0);
+    const auto* q = (const typename OracleInterface::OracleQuery*)enqueuedNetworkMessage.omQuery.queryData;
+    EXPECT_TRUE(compareMem(q, &expectedQuery, sizeof(typename OracleInterface::OracleQuery)) == 0);
 }
 
-static void enqueueResponse(Peer* peer, unsigned int dataSize, unsigned char type, unsigned int dejavu, const void* data)
+inline void enqueueResponse(Peer* peer, unsigned int dataSize, unsigned char type, unsigned int dejavu, const void* data)
 {
     EXPECT_EQ(peer, (Peer*)0x1);
     EXPECT_LE(dataSize, sizeof(OracleMachineQuery) + MAX_ORACLE_QUERY_SIZE);

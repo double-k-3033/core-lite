@@ -1,5 +1,6 @@
 #define NO_UEFI
 
+#include <algorithm>
 #include "oracle_testing.h"
 
 #include "platform/random.h"
@@ -89,10 +90,10 @@ struct OracleEngineWithInitAndDeinit : public OracleEngine<ownComputorSeedsCount
 		// test function with all values in range
 		uint32_t minValue = (ticks.empty()) ? 0 : ticks.front() - 1;
 		uint32_t maxValue = (ticks.empty()) ? 2 : ticks.back() + 1;
-		for (uint32 value = minValue; value <= maxValue; ++value)
+		for (uint32_t value = minValue; value <= maxValue; ++value)
 		{
 			auto it = std::find(ticks.begin(), ticks.end(), value);
-			uint32_t expectedIndex = (it == ticks.end()) ? UINT32_MAX : uint32(it - ticks.begin());
+			uint32_t expectedIndex = (it == ticks.end()) ? UINT32_MAX : uint32_t(it - ticks.begin());
 			EXPECT_EQ(this->findFirstQueryIndexOfTick(value), expectedIndex);
 		}
 

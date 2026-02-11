@@ -60,7 +60,7 @@ add_executable(
    		score_cache.cpp
    		spectrum.cpp
    		stdlib_impl.cpp
-   		# tick_storage.cpp
+   		tick_storage.cpp
    		time.cpp
    		tx_status_request.cpp
    		uint128.cpp
@@ -68,6 +68,7 @@ add_executable(
    		vote_counter.cpp
 		read_write_lock.cpp
 		setjump.cpp
+		oracle_engine.cpp
 )
 
 # Apply test-specific compiler flags from the centralized detection module
