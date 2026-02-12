@@ -11,7 +11,7 @@ on:
       configuration:
         description: "Build configuration"
         required: true
-        default: "Release"
+        default: "RelWithDebInfo"
         type: string
       build_dir:
         description: "Build directory"
