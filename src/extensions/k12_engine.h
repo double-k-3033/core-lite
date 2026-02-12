@@ -554,11 +554,20 @@ public:
                                 // retry
                                 while (true)
                                 {
+                                    // remove PTE for this page and retry
+                                    if (madvise((void*)startRange, lenRange, MADV_DONTNEED) == -1)
+                                    {
+                                        std::cout << "Contract " << contractIndex << ": madvise failed during UFFDIO_CONTINUE retry\n";
+                                        std::cout << "Error " << errno << ": " << strerror(errno) << "\n";
+                                    }
                                     if (ioctl(uffd.get(), UFFDIO_CONTINUE, &ucont) != -1) {
                                         break;
                                     }
                                     std::cout << "Contract " << contractIndex << ": UFFDIO_CONTINUE retry failed\n";
                                     std::cout << "Error " << errno << ": " << strerror(errno) << "\n";
+                                    std::cout << "Details: address 0x" << std::hex << ucont.range.start << std::dec
+                                              << ", length " << ucont.range.len << "\n";
+                                    std::cout << "Chunk index: " << chunkIndex << " | Max chunks: " << maxChunks << "\n";
                                     // Check alignment specifically
                                     if (ucont.range.start % page_size != 0)
                                     {
