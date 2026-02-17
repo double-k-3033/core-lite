@@ -16,13 +16,15 @@ from app.models import NodeHealth, TickInfo
 from app.node_client import NodeClient
 from app.state_manager import StateManager
 from app.uploaders.base import BaseUploader, RemotePackagingUploader
+from app.uploaders.chunked_scp import ChunkedScpUploader
 
 logger = logging.getLogger(__name__)
 
 # Lock coordination threshold: skip cycle if another source
 # uploaded a snapshot within this many ticks of our local tick.
 LOCK_TICK_THRESHOLD = 100
-_SNAPSHOT_ZIP_RE = re.compile(r"^ep(\d+)-t(\d+)-snap\.zip$")
+# Match snapshot archives (both .zip and .tar.zst)
+_SNAPSHOT_RE = re.compile(r"^ep(\d+)-t(\d+)-snap\.(zip|tar\.zst)$")
 
 
 class SnapshotCycle:
@@ -60,9 +62,9 @@ class SnapshotCycle:
     # ------------------------------------------------------------------
     # Remote key helpers
     # ------------------------------------------------------------------
-    @staticmethod
-    def _archive_key(epoch: int, tick: int) -> str:
-        return f"{epoch}/ep{epoch}-t{tick}-snap.zip"
+    def _archive_key(self, epoch: int, tick: int) -> str:
+        ext = "tar.zst" if self._config.package_compression == "tar.zst" else "zip"
+        return f"{epoch}/ep{epoch}-t{tick}-snap.{ext}"
 
     @staticmethod
     def _sidecar_key(epoch: int, tick: int) -> str:
@@ -384,12 +386,25 @@ class SnapshotCycle:
     async def _local_package_upload_path(
         self, epoch: int, snap_tick: int
     ) -> bool:
-        """Standard path: local ZIP packaging + upload."""
-        # Package snapshot with tick-specific name
-        # Run in a thread to avoid blocking the event loop during
-        # ZIP compression of potentially multi-GB state files.
+        """Standard path: local packaging + upload."""
         staging_dir = self._data_dir / ".snapshot-staging"
         staging_dir.mkdir(exist_ok=True)
+
+        # Marker file to prevent cleanup task from removing staging
+        in_progress_marker = staging_dir / ".upload-in-progress"
+
+        # Check if we should use streaming chunked compression
+        use_streaming_chunks = (
+            self._config.package_compression == "tar.zst"
+            and isinstance(self._uploader, ChunkedScpUploader)
+        )
+
+        if use_streaming_chunks:
+            return await self._chunked_package_upload_path(
+                epoch, snap_tick, staging_dir, in_progress_marker
+            )
+
+        # Standard path: package into single archive, then upload
         try:
             archive_path = await asyncio.to_thread(
                 self._state_manager.package_snapshot,
@@ -417,27 +432,159 @@ class SnapshotCycle:
         }
         remote_key = self._archive_key(epoch, snap_tick)
 
-        upload_ok = await self._upload_with_retries(
-            archive_path, metadata, remote_key
-        )
-
-        if upload_ok:
-            await self._publish_metadata(epoch, snap_tick, metadata)
-        else:
-            await self._alert_manager.send_alert(
-                "error",
-                "snapshot_upload_failed",
-                {"epoch": epoch, "tick": snap_tick},
-            )
-
-        # Cleanup staging
+        # Mark upload as in-progress to prevent cleanup interference
         try:
-            if archive_path.exists():
-                archive_path.unlink()
+            in_progress_marker.touch()
         except OSError:
             pass
 
+        try:
+            upload_ok = await self._upload_with_retries(
+                archive_path, metadata, remote_key
+            )
+
+            if upload_ok:
+                await self._publish_metadata(epoch, snap_tick, metadata)
+            else:
+                await self._alert_manager.send_alert(
+                    "error",
+                    "snapshot_upload_failed",
+                    {"epoch": epoch, "tick": snap_tick},
+                )
+        finally:
+            # Remove in-progress marker
+            try:
+                in_progress_marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        # Cleanup staging only after successful upload
+        if upload_ok:
+            try:
+                if archive_path.exists():
+                    archive_path.unlink()
+            except OSError:
+                pass
+
         return upload_ok
+
+    async def _chunked_package_upload_path(
+        self,
+        epoch: int,
+        snap_tick: int,
+        staging_dir: Path,
+        in_progress_marker: Path,
+    ) -> bool:
+        """Streaming path: tar | zstd | split directly into chunks."""
+        # Get chunk size from config
+        chunk_size_mb = self._config.scp_chunk_size_mb
+        logger.info(
+            f"Using streaming chunked compression "
+            f"(tar | zstd | split -b {chunk_size_mb}M)"
+        )
+
+        try:
+            chunk_files, total_uncompressed = await asyncio.to_thread(
+                self._state_manager.package_snapshot_chunked,
+                epoch,
+                staging_dir,
+                tick=snap_tick,
+                chunk_size_mb=chunk_size_mb,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create chunked snapshot: {e}")
+            return False
+
+        if not chunk_files:
+            logger.error("No chunk files created")
+            return False
+
+        # Calculate total compressed size
+        compressed_size = sum(c.stat().st_size for c in chunk_files)
+
+        now = datetime.now(timezone.utc).isoformat()
+        metadata = {
+            "epoch": epoch,
+            "tick": snap_tick,
+            "timestamp": now,
+            "checksum": "",  # Will be computed by uploader
+            "size_bytes": compressed_size,
+            "uncompressed_size_bytes": total_uncompressed,
+            "node_id": self._node_id,
+            "chunks": len(chunk_files),
+        }
+
+        # Use the archive key helper (uses config extension)
+        remote_key = self._archive_key(epoch, snap_tick)
+
+        # Mark upload as in-progress
+        try:
+            in_progress_marker.touch()
+        except OSError:
+            pass
+
+        try:
+            upload_ok = await self._upload_chunks_with_retries(
+                chunk_files, metadata, remote_key, total_uncompressed
+            )
+
+            if upload_ok:
+                # Update checksum in metadata from uploader
+                await self._publish_metadata(epoch, snap_tick, metadata)
+            else:
+                await self._alert_manager.send_alert(
+                    "error",
+                    "snapshot_upload_failed",
+                    {"epoch": epoch, "tick": snap_tick},
+                )
+        finally:
+            # Remove in-progress marker
+            try:
+                in_progress_marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        # Cleanup chunk files after successful upload
+        if upload_ok:
+            for chunk_path in chunk_files:
+                try:
+                    if chunk_path.exists():
+                        chunk_path.unlink()
+                except OSError:
+                    pass
+
+        return upload_ok
+
+    async def _upload_chunks_with_retries(
+        self,
+        chunk_files: list[Path],
+        metadata: dict,
+        remote_key: str,
+        total_uncompressed: int,
+    ) -> bool:
+        """Upload chunks with retry logic."""
+        for attempt in range(self._config.upload_retry_count + 1):
+            result = await self._uploader.upload_chunks(
+                chunk_files, metadata, remote_key, total_uncompressed
+            )
+            if result.success:
+                logger.info(
+                    f"Chunked upload successful: {result.remote_url} "
+                    f"({result.bytes_uploaded} bytes, "
+                    f"{result.duration_seconds:.1f}s)"
+                )
+                return True
+
+            logger.warning(
+                f"Chunked upload attempt {attempt + 1} failed: "
+                f"{result.error_message}"
+            )
+            if attempt < self._config.upload_retry_count:
+                await asyncio.sleep(
+                    self._config.upload_retry_delay_seconds
+                )
+
+        return False
 
     async def _rsync_upload_path(
         self, epoch: int, snap_tick: int
@@ -489,6 +636,9 @@ class SnapshotCycle:
         self, epoch: int, snap_tick: int, metadata: dict
     ) -> None:
         """Upload sidecar JSON, update index, and send alert."""
+        # Determine file extension from compression format
+        ext = "tar.zst" if self._config.package_compression == "tar.zst" else "zip"
+
         # Sidecar JSON
         sidecar_key = self._sidecar_key(epoch, snap_tick)
         sidecar_content = json.dumps(metadata, indent=2).encode()
@@ -501,7 +651,7 @@ class SnapshotCycle:
         index_data = {
             "epoch": epoch,
             "tick": snap_tick,
-            "file": f"ep{epoch}-t{snap_tick}-snap.zip",
+            "file": f"ep{epoch}-t{snap_tick}-snap.{ext}",
             "sidecar": f"ep{epoch}-t{snap_tick}-snap.json",
             "timestamp": metadata["timestamp"],
             "checksum": metadata.get("checksum", ""),
@@ -589,7 +739,8 @@ class SnapshotCycle:
             return  # cleanup disabled
 
         # Collect all snapshots across all epoch directories
-        all_snapshots: list[tuple[int, int]] = []  # (epoch, tick)
+        # Store (epoch, tick, extension) tuples
+        all_snapshots: list[tuple[int, int, str]] = []
 
         try:
             entries = await self._uploader.list_remote_dir("")
@@ -613,30 +764,32 @@ class SnapshotCycle:
                 continue
 
             for fname in files:
-                m = _SNAPSHOT_ZIP_RE.match(fname)
+                m = _SNAPSHOT_RE.match(fname)
                 if m:
-                    all_snapshots.append((int(m.group(1)), int(m.group(2))))
+                    # group(1)=epoch, group(2)=tick, group(3)=extension
+                    all_snapshots.append(
+                        (int(m.group(1)), int(m.group(2)), m.group(3))
+                    )
 
         if len(all_snapshots) <= keep:
             return  # nothing to clean up
 
         # Sort by (epoch, tick) descending — most recent first
-        all_snapshots.sort(reverse=True)
-        to_keep = set(all_snapshots[:keep])
+        all_snapshots.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        to_keep = set((s[0], s[1]) for s in all_snapshots[:keep])
         to_delete = all_snapshots[keep:]
 
         kept_epochs = {s[0] for s in to_keep}
         deleted_count = 0
 
-        for epoch, tick in to_delete:
+        for epoch, tick, ext in to_delete:
             if epoch in kept_epochs:
                 # Epoch still has kept snapshots — only delete this archive
-                await self._uploader.delete_file(
-                    self._archive_key(epoch, tick)
-                )
-                await self._uploader.delete_file(
-                    self._sidecar_key(epoch, tick)
-                )
+                archive_key = f"{epoch}/ep{epoch}-t{tick}-snap.{ext}"
+                sidecar_key = f"{epoch}/ep{epoch}-t{tick}-snap.json"
+                logger.info(f"Deleting old snapshot: {archive_key}")
+                await self._uploader.delete_file(archive_key)
+                await self._uploader.delete_file(sidecar_key)
             # Entire epoch will be removed below
             deleted_count += 1
 

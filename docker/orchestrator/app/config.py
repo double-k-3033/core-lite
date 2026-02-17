@@ -68,8 +68,8 @@ class SourceConfig(BaseModel):
     upload_timeout_seconds: int = 1800
     upload_retry_count: int = 3
     upload_retry_delay_seconds: int = 30
-    package_compression: str = "zip"
-    snapshot_keep_count: int = 2     # keep N most recent snapshots, 0 = no cleanup
+    package_compression: str = "tar.zst"  # "zip" or "tar.zst" (faster, multi-threaded)
+    snapshot_keep_count: int = 1     # keep N most recent snapshots, 0 = no cleanup
     uploader_type: str = "scp"
 
     # SCP/SSH uploader (default)
@@ -78,6 +78,12 @@ class SourceConfig(BaseModel):
     scp_port: int = 22
     scp_dest_path: str = "/snapshots"
     scp_key_file: str = ""
+
+    # Chunked upload settings (for large files)
+    scp_chunk_size_mb: int = 2048        # Split into 2048MB chunks
+    scp_chunk_timeout: int = 600        # 10 min timeout per chunk
+    scp_parallel_chunks: int = 2        # Upload 2 chunks in parallel
+    scp_min_chunk_size_gb: int = 2      # Only chunk files > 2GB
 
     # Rsync uploader (set uploader_type: "rsync")
     # Reuses scp_host, scp_user, scp_port, scp_dest_path, scp_key_file
