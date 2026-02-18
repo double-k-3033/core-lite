@@ -37,6 +37,8 @@
 #define system qsystem
 #endif
 
+// #define NO_PULSE
+
 //#define INCLUDE_CONTRACT_TEST_EXAMPLES
 
 // contract_def.h needs to be included first to make sure that contracts have minimal access
@@ -2721,7 +2723,7 @@ static void contractProcessor(void*, unsigned long long processorNumber)
 void notifyContractOfIncomingTransfer(const m256i& source, const m256i& dest, long long amount, unsigned char type)
 {
     // Only notify if amount > 0 and dest is contract
-    if (amount <= 0 || dest.u64._0 >= contractCount || dest.u64._1 || dest.u64._2 || dest.u64._3)
+    if (amount <= 0 || !isPublicKeyOfContract(dest))
         return;
 
     // Also don't run contract processor if the callback isn't implemented in the dest contract
@@ -4282,9 +4284,8 @@ static void endEpoch()
         constexpr long long issuancePerComputor = ISSUANCE_RATE / NUMBER_OF_COMPUTORS;
         for (unsigned int computorIndex = 0; computorIndex < NUMBER_OF_COMPUTORS; computorIndex++)
         {
-            // TODO: Remove this and uncomment the line below to restore normal revenue distribution
-            long long revenue = issuancePerComputor;
-            // long long revenue = gRevenueComponents.revenue[computorIndex];
+            // Compute initial computor revenue, reducing arbitrator revenue
+            long long revenue = gRevenueComponents.revenue[computorIndex];
             arbitratorRevenue -= revenue;
 
             // Reduce computor revenue based on revenue donation table agreed on by quorum
@@ -6959,9 +6960,9 @@ static bool initialize()
         peers[i].receiveData.FragmentCount = 1;
         peers[i].transmitData.FragmentCount = 1;
 
-        if ((!allocPoolWithErrorLog(L"receiveBuffer", BUFFER_SIZE, &peers[i].receiveBuffer, __LINE__))  ||
-            (!allocPoolWithErrorLog(L"FragmentBuffer", BUFFER_SIZE, &peers[i].transmitData.FragmentTable[0].FragmentBuffer, __LINE__)) ||
-            (!allocPoolWithErrorLog(L"dataToTransmit", BUFFER_SIZE, (void**)&peers[i].dataToTransmit, __LINE__)))
+        if ((!allocPoolWithErrorLog(L"receiveBuffer", BUFFER_SIZE, &peers[i].receiveBuffer, __LINE__, true, true))  ||
+            (!allocPoolWithErrorLog(L"FragmentBuffer", BUFFER_SIZE, &peers[i].transmitData.FragmentTable[0].FragmentBuffer, __LINE__, true, true)) ||
+            (!allocPoolWithErrorLog(L"dataToTransmit", BUFFER_SIZE, (void**)&peers[i].dataToTransmit, __LINE__, true, true)))
         {
             return false;
         }

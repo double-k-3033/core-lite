@@ -2346,6 +2346,11 @@ namespace QPI
 			uint32 ipoBidIndex
 		) const;
 
+		// Returns true if the id passed belongs to a contract (no user entity).
+		inline bit isContractId(
+			const id& id
+		) const;
+
 		template <typename T>
 		inline id K12(
 			const T& data
