@@ -200,22 +200,78 @@ class StateManager:
     async def download_snapshot(
         self, snapshot_meta: SnapshotMeta
     ) -> bool:
-        """Download a snapshot archive."""
-        zip_path = self._data_dir / "snapshot.zip"
+        """Download a snapshot archive (ZIP or tar.zst)."""
+        # Determine file extension from URL
+        url = snapshot_meta.url
+        if url.endswith(".tar.zst") or ".tar.zst" in url:
+            archive_path = self._data_dir / "snapshot.tar.zst"
+        else:
+            archive_path = self._data_dir / "snapshot.zip"
+
         try:
-            await self._downloader.download(snapshot_meta.url, zip_path)
-            self._extract_and_rename(zip_path, snapshot_meta.epoch)
+            await self._downloader.download(url, archive_path)
+            self._extract_archive(archive_path, snapshot_meta.epoch)
             return True
         except Exception as e:
             logger.error(f"Failed to download snapshot: {e}")
             return False
         finally:
-            if zip_path.exists():
-                zip_path.unlink()
+            if archive_path.exists():
+                archive_path.unlink()
 
-    def _extract_and_rename(self, zip_path: Path, epoch: int) -> None:
+    def _extract_archive(self, archive_path: Path, epoch: int) -> None:
+        """Extract archive (auto-detect ZIP or tar.zst) and rename files."""
+        if archive_path.suffix == ".zst" or archive_path.name.endswith(".tar.zst"):
+            self._extract_tar_zst(archive_path, epoch)
+        else:
+            self._extract_zip(archive_path, epoch)
+
+    def _extract_tar_zst(self, archive_path: Path, epoch: int) -> None:
+        """Extract tar.zst archive using system tar+zstd."""
+        import subprocess
+        import time
+
+        logger.info(f"Extracting tar.zst: {archive_path} to {self._data_dir}")
+        start_time = time.monotonic()
+
+        cmd = [
+            "tar",
+            "-I", "zstd -T0",  # Multi-threaded decompression
+            "-xf", str(archive_path),
+            "-C", str(self._data_dir),
+        ]
+
+        try:
+            # Run extraction without verbose mode for speed
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"tar extraction failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()}"
+                )
+
+            duration = time.monotonic() - start_time
+            archive_size = archive_path.stat().st_size / (1024**3)
+            speed = archive_size / duration if duration > 0 else 0
+            logger.info(
+                f"Extracted {archive_size:.2f} GB in {duration:.0f}s "
+                f"({speed:.2f} GB/s)"
+            )
+
+        except FileNotFoundError:
+            raise RuntimeError("zstd not found. Install zstd package.")
+
+        # Rename files to match epoch
+        self._rename_extracted_files(epoch)
+
+    def _extract_zip(self, zip_path: Path, epoch: int) -> None:
         """Extract zip in parallel and rename files to match the epoch."""
-        logger.info(f"Extracting {zip_path} to {self._data_dir}")
+        logger.info(f"Extracting ZIP: {zip_path} to {self._data_dir}")
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             entries = [i.filename for i in zf.infolist() if not i.is_dir()]
@@ -259,7 +315,11 @@ class StateManager:
                     logger.error(f"Batch extraction failed: {exc}")
                     raise
 
-        # Rename files with .000 extension (or wrong epoch) to current epoch
+        # Rename files to match epoch
+        self._rename_extracted_files(epoch)
+
+    def _rename_extracted_files(self, epoch: int) -> None:
+        """Rename files with .000 extension (or wrong epoch) to current epoch."""
         for path in self._data_dir.iterdir():
             if not path.is_file():
                 continue
@@ -466,21 +526,20 @@ class StateManager:
         self,
         epoch: int,
         dest: Path,
-        tick: Optional[int] = None,
-        compression: str = "zip",
+        tick: int,
+        compression: str = "tar.zst",
     ) -> Path:
         """Package state files into a snapshot archive.
 
-        Compresses files in parallel using a thread pool (zlib releases
-        the GIL), then assembles the final ZIP from pre-compressed data.
+        Uses tar+zstd for fast multi-threaded compression by default.
+        Falls back to parallel ZIP if compression="zip" is specified.
 
         Args:
             epoch: Current epoch number.
             dest: Directory where the archive will be written.
-            tick: If provided, uses tick-specific naming
-                  (``ep{epoch}-t{tick}-snap.zip``).  Otherwise falls
-                  back to the legacy name ``ep{epoch}-full.zip``.
-            compression: Only ``"zip"`` is supported.
+            tick: Current tick number for naming the archive.
+            compression: ``"zip"`` (default) or ``"tar.zst"`` for faster
+                  multi-threaded zstd compression.
         """
         files = self.list_snapshot_files(epoch)
         if not files:
@@ -488,10 +547,16 @@ class StateManager:
                 f"No state files found for epoch {epoch}"
             )
 
-        if tick is not None:
-            archive_name = f"ep{epoch}-t{tick}-snap.zip"
+        # Determine archive extension based on compression
+        if compression == "tar.zst":
+            ext = "tar.zst"
         else:
-            archive_name = f"ep{epoch}-full.zip"
+            ext = "zip"
+
+        archive_name = f"ep{epoch}-t{tick}-snap.{ext}"
+
+        if compression == "tar.zst":
+            return self._package_tar_zst(files, dest / archive_name)
 
         if compression != "zip":
             raise ValueError(f"Unsupported compression: {compression}")
@@ -551,6 +616,256 @@ class StateManager:
             f"({size} bytes, {len(files)} files, {workers} workers)"
         )
         return archive_path
+
+    def _package_tar_zst(self, files: list[Path], archive_path: Path) -> Path:
+        """Package files using tar with multi-threaded zstd compression.
+
+        Uses ``tar -I "zstd -T0"`` for native multi-threaded compression
+        which is significantly faster than Python's zlib.
+
+        Args:
+            files: List of files to include in the archive.
+            archive_path: Destination path for the archive.
+
+        Returns:
+            Path to the created archive.
+        """
+        import subprocess
+        import time
+
+        # Build list of files relative to data_dir
+        file_args = []
+        total_size = 0
+        for f in files:
+            rel_path = f.relative_to(self._data_dir)
+            file_args.append(str(rel_path))
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                pass
+
+        logger.info(
+            f"Creating tar.zst archive: {len(files)} files, "
+            f"{total_size / (1024**3):.1f} GB to compress"
+        )
+
+        # Use tar with zstd compression and verbose output
+        # -I "zstd -T0": use zstd with all CPU threads
+        # -v: verbose (outputs each file name to stderr)
+        # -c: create archive
+        # -f: output file
+        # -C: change to data_dir before adding files
+        cmd = [
+            "tar",
+            "-I", "zstd -T0",
+            "-vcf", str(archive_path),
+            "-C", str(self._data_dir),
+        ] + file_args
+
+        try:
+            start_time = time.monotonic()
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            # Read stderr (tar -v outputs to stderr) and log progress
+            files_processed = 0
+            last_log_time = start_time
+            log_interval = 10  # Log every 10 seconds
+
+            for line in proc.stderr:
+                files_processed += 1
+                now = time.monotonic()
+                if now - last_log_time >= log_interval:
+                    elapsed = now - start_time
+                    pct = (files_processed / len(files)) * 100
+                    logger.info(
+                        f"Compressing: {files_processed}/{len(files)} files "
+                        f"({pct:.0f}%) - {elapsed:.0f}s elapsed"
+                    )
+                    last_log_time = now
+
+            proc.wait()
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+            duration = time.monotonic() - start_time
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"tar+zstd failed with exit code {e.returncode}")
+            raise RuntimeError(f"Failed to create tar.zst archive: exit {e.returncode}")
+        except FileNotFoundError:
+            raise RuntimeError(
+                "zstd not found. Install zstd package or use compression='zip'"
+            )
+
+        compressed_size = archive_path.stat().st_size
+        ratio = total_size / compressed_size if compressed_size > 0 else 0
+        logger.info(
+            f"Packaged snapshot: {archive_path.name} "
+            f"({compressed_size / (1024**3):.2f} GB, "
+            f"{ratio:.1f}x compression, {duration:.0f}s)"
+        )
+        return archive_path
+
+    def package_snapshot_chunked(
+        self,
+        epoch: int,
+        dest: Path,
+        tick: int,
+        chunk_size_mb: int = 2048,
+    ) -> tuple[list[Path], int]:
+        """Package state files directly into tar.zst chunks using streaming.
+
+        Uses ``tar | zstd | split`` pipeline to create chunks without
+        creating an intermediate full archive. This saves disk space and
+        time for large snapshots (16GB+).
+
+        Args:
+            epoch: Current epoch number.
+            dest: Directory where chunk files will be written.
+            tick: Current tick number for naming.
+            chunk_size_mb: Size of each chunk in MB (default 2048 = 2GB).
+
+        Returns:
+            Tuple of (list of chunk file paths, total uncompressed size).
+        """
+        import subprocess
+        import time
+
+        files = self.list_snapshot_files(epoch)
+        if not files:
+            raise FileNotFoundError(
+                f"No state files found for epoch {epoch}"
+            )
+
+        # Build list of files relative to data_dir
+        file_args = []
+        total_size = 0
+        for f in files:
+            rel_path = f.relative_to(self._data_dir)
+            file_args.append(str(rel_path))
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                pass
+
+        # Base name for chunks: ep199-t43669270-snap.tar.zst.
+        # split will append numeric suffixes: .00, .01, .02, etc.
+        base_name = f"ep{epoch}-t{tick}-snap.tar.zst."
+        chunk_prefix = dest / base_name
+
+        logger.info(
+            f"Creating chunked tar.zst: {len(files)} files, "
+            f"{total_size / (1024**3):.1f} GB -> {chunk_size_mb}MB chunks"
+        )
+
+        # Pipeline: tar | zstd | split
+        # tar -cf - : create archive to stdout
+        # zstd -T0  : compress with all threads, output to stdout
+        # split -b  : split into fixed-size chunks with numeric suffixes
+        tar_cmd = [
+            "tar", "-cf", "-",
+            "-C", str(self._data_dir),
+        ] + file_args
+
+        zstd_cmd = ["zstd", "-T0", "-"]
+
+        split_cmd = [
+            "split",
+            "-b", f"{chunk_size_mb}M",
+            "-d",  # numeric suffixes: 00, 01, 02
+            "-a", "2",  # 2-digit suffix
+            "-",  # read from stdin
+            str(chunk_prefix),  # output prefix
+        ]
+
+        try:
+            start_time = time.monotonic()
+
+            # Create pipeline: tar | zstd | split
+            tar_proc = subprocess.Popen(
+                tar_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            zstd_proc = subprocess.Popen(
+                zstd_cmd,
+                stdin=tar_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Close tar stdout in parent so zstd gets EOF
+            tar_proc.stdout.close()
+
+            split_proc = subprocess.Popen(
+                split_cmd,
+                stdin=zstd_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Close zstd stdout in parent
+            zstd_proc.stdout.close()
+
+            # Log progress periodically while waiting
+            last_log_time = start_time
+            log_interval = 30  # Log every 30 seconds
+
+            while split_proc.poll() is None:
+                time.sleep(1)
+                now = time.monotonic()
+                if now - last_log_time >= log_interval:
+                    elapsed = now - start_time
+                    # Count existing chunks to show progress
+                    existing_chunks = sorted(dest.glob(f"{base_name}*"))
+                    chunk_bytes = sum(c.stat().st_size for c in existing_chunks)
+                    logger.info(
+                        f"Compressing: {len(existing_chunks)} chunks "
+                        f"({chunk_bytes / (1024**3):.2f} GB) - {elapsed:.0f}s elapsed"
+                    )
+                    last_log_time = now
+
+            # Wait for all processes to complete
+            split_proc.wait()
+            zstd_proc.wait()
+            tar_proc.wait()
+
+            # Check for errors
+            if tar_proc.returncode != 0:
+                stderr = tar_proc.stderr.read().decode() if tar_proc.stderr else ""
+                raise RuntimeError(f"tar failed (exit {tar_proc.returncode}): {stderr}")
+            if zstd_proc.returncode != 0:
+                stderr = zstd_proc.stderr.read().decode() if zstd_proc.stderr else ""
+                raise RuntimeError(f"zstd failed (exit {zstd_proc.returncode}): {stderr}")
+            if split_proc.returncode != 0:
+                stderr = split_proc.stderr.read().decode() if split_proc.stderr else ""
+                raise RuntimeError(f"split failed (exit {split_proc.returncode}): {stderr}")
+
+            duration = time.monotonic() - start_time
+
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"Required command not found: {e}. Install zstd package."
+            )
+
+        # Collect created chunk files
+        chunk_files = sorted(dest.glob(f"{base_name}*"))
+        if not chunk_files:
+            raise RuntimeError("No chunk files created")
+
+        compressed_size = sum(c.stat().st_size for c in chunk_files)
+        ratio = total_size / compressed_size if compressed_size > 0 else 0
+
+        logger.info(
+            f"Created {len(chunk_files)} chunks: "
+            f"{compressed_size / (1024**3):.2f} GB compressed "
+            f"({ratio:.1f}x ratio, {duration:.0f}s)"
+        )
+
+        return chunk_files, total_size
 
     def cleanup_old_epochs(self, current_epoch: int, keep: int = 0) -> None:
         """Remove state files, snapshot dirs, and page dirs from old epochs."""

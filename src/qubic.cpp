@@ -3055,9 +3055,9 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
     const m256i& dataLock = nextTickData.timelock;
 
     // Record the tx with digest
-    ts.transactionsDigestAccess.acquireLock();
-    ts.transactionsDigestAccess.insertTransaction(transactionDigest, txOffset);
-    ts.transactionsDigestAccess.releaseLock();
+    // ts.transactionsDigestAccess.acquireLock();
+    // ts.transactionsDigestAccess.insertTransaction(transactionDigest, txOffset);
+    // ts.transactionsDigestAccess.releaseLock();
 
 #if !defined(NDEBUG)
     if (isZero(transaction->destinationPublicKey))
@@ -6906,9 +6906,9 @@ static bool initialize()
         peers[i].receiveData.FragmentCount = 1;
         peers[i].transmitData.FragmentCount = 1;
 
-        if ((!allocPoolWithErrorLog(L"receiveBuffer", BUFFER_SIZE, &peers[i].receiveBuffer, __LINE__))  ||
-            (!allocPoolWithErrorLog(L"FragmentBuffer", BUFFER_SIZE, &peers[i].transmitData.FragmentTable[0].FragmentBuffer, __LINE__)) ||
-            (!allocPoolWithErrorLog(L"dataToTransmit", BUFFER_SIZE, (void**)&peers[i].dataToTransmit, __LINE__)))
+        if ((!allocPoolWithErrorLog(L"receiveBuffer", BUFFER_SIZE, &peers[i].receiveBuffer, __LINE__, true, true))  ||
+            (!allocPoolWithErrorLog(L"FragmentBuffer", BUFFER_SIZE, &peers[i].transmitData.FragmentTable[0].FragmentBuffer, __LINE__, true, true)) ||
+            (!allocPoolWithErrorLog(L"dataToTransmit", BUFFER_SIZE, (void**)&peers[i].dataToTransmit, __LINE__, true, true)))
         {
             return false;
         }

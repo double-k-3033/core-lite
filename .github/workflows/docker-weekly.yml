@@ -1,9 +1,7 @@
 name: Docker Weekly
 
 on:
-  schedule:
-    - cron: "5 12 * * 3" # every Wednesday at 12:05 UTC
-  workflow_dispatch: # manual trigger
+  workflow_dispatch: # triggered by scheduler workflow or manually
 
 jobs:
   publish-docker-latest:
