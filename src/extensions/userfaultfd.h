@@ -11,7 +11,7 @@
 class UserFaultFD {
 public:
     UserFaultFD() {
-        fd = syscall(SYS_userfaultfd, O_NONBLOCK);
+        fd = syscall(SYS_userfaultfd, O_NONBLOCK | UFFD_USER_MODE_ONLY);
         if (fd < 0) throw std::runtime_error("Error: userfaultfd syscall failed, make sure you have root privileges | Line: " + std::to_string(__LINE__));
 
         uffdio_api api{ .api = UFFD_API };
