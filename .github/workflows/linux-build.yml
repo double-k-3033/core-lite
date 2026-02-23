@@ -39,7 +39,7 @@ jobs:
       - name: Install CMake and dependencies
         run: |
           apt update
-          apt install -y wget curl gnupg software-properties-common lsb-release
+          apt install -y wget curl gnupg software-properties-common lsb-release git
           wget https://apt.llvm.org/llvm.sh; chmod +x llvm.sh; ./llvm.sh 20;
           apt install -y clang cmake nasm
           apt install -y libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
