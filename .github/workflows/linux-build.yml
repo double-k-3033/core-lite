@@ -24,7 +24,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:22.04
+      options: --privileged
     outputs:
       artifact-path: ${{ steps.build.outputs.path }}
     steps:
@@ -35,10 +38,11 @@ jobs:
       # Install dependencies
       - name: Install CMake and dependencies
         run: |
-          sudo apt update
-          wget https://apt.llvm.org/llvm.sh; chmod +x llvm.sh; sudo ./llvm.sh 20;
-          sudo apt install -y clang cmake nasm
-          sudo apt install -y libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
+          apt update
+          apt install -y wget curl gnupg software-properties-common lsb-release git
+          wget https://apt.llvm.org/llvm.sh; chmod +x llvm.sh; ./llvm.sh 20;
+          apt install -y clang cmake nasm
+          apt install -y libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
 
       # Configure the project
       - name: Configure with CMake
