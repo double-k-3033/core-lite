@@ -24,7 +24,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:22.04
+      options: --privileged
     outputs:
       artifact-path: ${{ steps.build.outputs.path }}
     steps:
