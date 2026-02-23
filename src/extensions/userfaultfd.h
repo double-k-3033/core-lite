@@ -18,11 +18,19 @@ public:
         if (ioctl(fd, UFFDIO_API, &api) == -1)
             throw std::runtime_error("Error: UFFDIO_API ioctl failed | Line: " + std::to_string(__LINE__));
 
-        if (!(api.features & UFFD_FEATURE_WP_HUGETLBFS_SHMEM)) {
-            printf("Your kernel doesn't support UFFD_FEATURE_WP_HUGETLBFS_SHMEM, which is required for write-protect page fault handling. Please upgrade to Linux kernel 6.5 or later.\n");
+        auto printAndThrow = [&](const char* featureName) {
+            printf("Your kernel doesn't support %s, which is required for write-protect page fault handling. Please upgrade to Linux kernel 6.5 or later.\n", featureName);
             printf("Run: sudo apt update && sudo apt install linux-generic-hwe-22.04 -y to get a newer kernel on Ubuntu\n");
-            throw std::runtime_error("Error: UFFD_FEATURE_WP_HUGETLBFS_SHMEM not supported | Line: " + std::to_string(__LINE__));
+            throw std::runtime_error(std::string("Error: ") + featureName + " not supported | Line: " + std::to_string(__LINE__));
+        };
+
+#ifdef UFFD_FEATURE_WP_HUGETLBFS_SHMEM
+        if (!(api.features & UFFD_FEATURE_WP_HUGETLBFS_SHMEM)) {
+            printAndThrow("UFFD_FEATURE_WP_HUGETLBFS_SHMEM");
         }
+#else
+        printAndThrow("UFFD_FEATURE_WP_HUGETLBFS_SHMEM");
+#endif
     }
 
     ~UserFaultFD() { if (fd >= 0) close(fd); }
