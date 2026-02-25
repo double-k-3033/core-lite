@@ -48,6 +48,7 @@ class Orchestrator:
         self._alert_manager: Optional[AlertManager] = None
         self._watchdog: Optional[Watchdog] = None
         self._snapshot_cycle: Optional[SnapshotCycle] = None
+        self._local_snapshot_saver: Optional[LocalSnapshotSaver] = None
         self._management_api: Optional[ManagementAPI] = None
         self._local_version: tuple[int, int] | None = None
 
@@ -513,13 +514,14 @@ class Orchestrator:
 
         # Local snapshot saver (periodic F8-style saves)
         if self._config.local_snapshot.enabled:
-            local_snapshot_saver = LocalSnapshotSaver(
+            self._local_snapshot_saver = LocalSnapshotSaver(
                 config=self._config.local_snapshot,
                 node_client=self._node_client,
+                watchdog=self._watchdog,
             )
             self._tasks.append(
                 asyncio.create_task(
-                    local_snapshot_saver.run(self._shutdown_event),
+                    self._local_snapshot_saver.run(self._shutdown_event),
                     name="local_snapshot_saver",
                 )
             )
@@ -580,6 +582,16 @@ class Orchestrator:
     async def _shutdown(self) -> None:
         """Graceful shutdown sequence."""
         logger.info("Shutting down orchestrator...")
+
+        # Save node state before stopping anything
+        if (
+            self._local_snapshot_saver
+            and self._process_manager
+            and self._process_manager.is_running()
+        ):
+            logger.info("Saving node state before shutdown...")
+            await self._local_snapshot_saver.save_and_wait()
+
         self._shutdown_event.set()
 
         # Cancel background tasks

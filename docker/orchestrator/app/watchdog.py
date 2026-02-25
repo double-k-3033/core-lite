@@ -13,6 +13,9 @@ from app.process_manager import ProcessManager
 
 logger = logging.getLogger(__name__)
 
+# How often to send F4 (peer reset) while the node is stuck/misaligned.
+_PEER_RESET_INTERVAL = 30
+
 
 class Watchdog:
     """Monitors node health and triggers restarts when necessary."""
@@ -42,6 +45,12 @@ class Watchdog:
         # Misalignment tracking (time-based, requires same tick)
         self._misalignment_start_time: float | None = None
         self._misalignment_start_tick: int | None = None
+        # Peer reset (F4) tracking.  F4 is sent every
+        # _PEER_RESET_INTERVAL seconds while the node is unhealthy.
+        # After _peer_reset_window seconds of F4 attempts without
+        # recovery, escalate to a full restart.
+        self._first_peer_reset_time: float | None = None
+        self._last_peer_reset_time: float = 0
 
     @property
     def state(self) -> NodeState:
@@ -95,6 +104,11 @@ class Watchdog:
                     logger.info(
                         f"Health state changed: {prev_health.value} -> {health.value}"
                     )
+
+                # Reset peer-reset tracking when node recovers
+                if health == NodeHealth.HEALTHY:
+                    self._first_peer_reset_time = None
+                    self._last_peer_reset_time = 0
 
                 if health not in (
                     NodeHealth.HEALTHY,
@@ -352,6 +366,52 @@ class Watchdog:
                 return
 
             tick_info = self._state.last_tick_info
+
+            # For stuck/misaligned: repeatedly send F4 (peer reset)
+            # every _PEER_RESET_INTERVAL seconds.  Only escalate to a
+            # full restart after F4 has been tried for at least as long
+            # as the original detection threshold.  Skip for
+            # epoch_behind since reconnecting won't help.
+            if health in (NodeHealth.STUCK, NodeHealth.MISALIGNED):
+                now_f4 = time.monotonic()
+
+                if self._first_peer_reset_time is None:
+                    # First F4 for this unhealthy episode
+                    self._first_peer_reset_time = now_f4
+                    self._last_peer_reset_time = 0  # force immediate send
+
+                # How long to keep trying F4 before escalating
+                peer_reset_window = (
+                    self._config.stuck_threshold_seconds
+                    if health == NodeHealth.STUCK
+                    else self._config.misaligned_threshold_seconds
+                )
+                elapsed_since_first = (
+                    now_f4 - self._first_peer_reset_time
+                )
+
+                if elapsed_since_first < peer_reset_window:
+                    # Still within the F4 window — send if interval elapsed
+                    if (
+                        now_f4 - self._last_peer_reset_time
+                        >= _PEER_RESET_INTERVAL
+                    ):
+                        self._last_peer_reset_time = now_f4
+                        logger.info(
+                            f"Node is {health.value}, "
+                            f"sending peer reset (F4) "
+                            f"[{elapsed_since_first:.0f}s "
+                            f"into {peer_reset_window}s window]"
+                        )
+                        await self._process_manager.send_key("f4")
+                    return
+
+                # F4 window exhausted — fall through to restart
+                logger.info(
+                    f"Peer reset window ({peer_reset_window}s) "
+                    "exhausted, escalating to restart"
+                )
+
             await self._alert_manager.send_alert(
                 "warning",
                 f"node_{health.value}",
@@ -394,6 +454,8 @@ class Watchdog:
             self._consecutive_epoch_behind_polls = 0
             self._misalignment_start_time = None
             self._misalignment_start_tick = None
+            self._first_peer_reset_time = None
+            self._last_peer_reset_time = 0
             self._state.last_tick_change_time = time.monotonic()
         except Exception as e:
             logger.error(f"Failed to restart node: {e}")
