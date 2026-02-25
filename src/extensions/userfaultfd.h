@@ -8,6 +8,11 @@
 #define UFFDIO_CONTINUE_MODE_WP ((__u64)1 << 1)
 #endif
 
+#ifndef UFFD_FEATURE_WP_HUGETLBFS_SHMEM
+#define UFFD_FEATURE_WP_HUGETLBFS_SHMEM (1<<12)
+#endif
+
+
 class UserFaultFD {
 public:
     UserFaultFD() {
@@ -24,13 +29,9 @@ public:
             throw std::runtime_error(std::string("Error: ") + featureName + " not supported | Line: " + std::to_string(__LINE__));
         };
 
-#ifdef UFFD_FEATURE_WP_HUGETLBFS_SHMEM
         if (!(api.features & UFFD_FEATURE_WP_HUGETLBFS_SHMEM)) {
             printAndThrow("UFFD_FEATURE_WP_HUGETLBFS_SHMEM");
         }
-#else
-        printAndThrow("UFFD_FEATURE_WP_HUGETLBFS_SHMEM");
-#endif
     }
 
     ~UserFaultFD() { if (fd >= 0) close(fd); }
