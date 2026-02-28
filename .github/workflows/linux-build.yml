@@ -38,11 +38,21 @@ jobs:
           sudo apt update -y
           wget https://apt.llvm.org/llvm.sh; chmod +x llvm.sh; sudo ./llvm.sh 20;
           sudo apt install -y clang cmake nasm
-          sudo apt install -y libboost-stacktrace-dev libbacktrace-dev libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
+          sudo apt install -y libboost-stacktrace-dev libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
+
+      - name: Install libbacktrace from source
+        run: |
+          git clone https://github.com/ianlancetaylor/libbacktrace.git
+          cd libbacktrace
+          ./configure
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig  # Crucial: updates library cache so linker finds libbacktrace
 
       # Configure the project
       - name: Configure with CMake
         run: |
+          cd ${{ env.GITHUB_WORKSPACE }}
           cmake -S . -B ${{ inputs.build_dir }} \
             -DCMAKE_BUILD_TYPE=${{ inputs.configuration }} \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
