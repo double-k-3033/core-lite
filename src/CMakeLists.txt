@@ -103,23 +103,14 @@ elseif(IS_MSVC)
 endif()
 
 find_package(Threads REQUIRED)
-# Link with platform libraries
-# if(BUILD_TESTS)
-#   # When building for tests, link only with platform_common and platform_os
-#   target_link_libraries(Qubic
-#     platform_common
-#     platform_os
-#   )
-# else()
-  # Apply common compiler flags from the centralized detection module
-  apply_common_compiler_flags(Qubic)
-  # When building the application, link with platform_common and platform_efi
-  target_link_libraries(Qubic
-    platform_common
-    platform_efi
-    Threads::Threads drogon fmt::fmt Blosc2::blosc2_static
-  )
-# endif()
+find_library(BACKTRACE_LIB backtrace REQUIRED)
+
+apply_common_compiler_flags(Qubic)
+target_link_libraries(Qubic
+        platform_common
+        platform_efi
+        Threads::Threads drogon fmt::fmt Blosc2::blosc2_static ${BACKTRACE_LIB}
+)
 
 # Configure linker settings based on compiler
 if(IS_MSVC)
