@@ -103,7 +103,11 @@ elseif(IS_MSVC)
 endif()
 
 find_package(Threads REQUIRED)
-find_library(BACKTRACE_LIB backtrace REQUIRED)
+find_library(BACKTRACE_LIB
+        NAMES libbacktrace.a
+        PATHS /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib
+        NO_DEFAULT_PATH
+)
 
 apply_common_compiler_flags(Qubic)
 target_link_libraries(Qubic
