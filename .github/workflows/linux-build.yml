@@ -52,7 +52,6 @@ jobs:
       # Configure the project
       - name: Configure with CMake
         run: |
-          cd ${{ env.GITHUB_WORKSPACE }}
           cmake -S . -B ${{ inputs.build_dir }} \
             -DCMAKE_BUILD_TYPE=${{ inputs.configuration }} \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
