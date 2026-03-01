@@ -40,15 +40,6 @@ jobs:
           sudo apt install -y clang cmake nasm
           sudo apt install -y libboost-stacktrace-dev libc++-dev libc++abi-dev libjsoncpp-dev uuid-dev zlib1g-dev g++ libstdc++-12-dev libfmt-dev liblzo2-dev liblz4-dev
 
-      - name: Install libbacktrace from source
-        run: |
-          git clone https://github.com/ianlancetaylor/libbacktrace.git
-          cd libbacktrace
-          ./configure
-          make -j$(nproc)
-          sudo make install
-          sudo ldconfig  # Crucial: updates library cache so linker finds libbacktrace
-
       # Configure the project
       - name: Configure with CMake
         run: |
