@@ -46,6 +46,10 @@ if(NOT TARGET Jsoncpp::Jsoncpp)
 endif()
 include_directories(${jsoncpp_SOURCE_DIR}/include)
 
+set(BUILD_POSTGRESQL OFF CACHE BOOL "" FORCE)
+set(BUILD_MYSQL OFF CACHE BOOL "" FORCE)
+set(BUILD_SQLITE OFF CACHE BOOL "" FORCE)
+set(BUILD_REDIS OFF CACHE BOOL "" FORCE)
 set(BUILD_DROGON_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
         drogon
