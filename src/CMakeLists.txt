@@ -80,7 +80,7 @@ include_directories(${blosc2_SOURCE_DIR}/include)
 set(LIBBACKTRACE_PREFIX ${CMAKE_BINARY_DIR}/libbacktrace)
 set(LIBBACKTRACE_BINARY_DIR ${LIBBACKTRACE_PREFIX}/src/libbacktrace_project-build)
 set(LIBBACKTRACE_STATIC_LIB ${LIBBACKTRACE_BINARY_DIR}/.libs/libbacktrace.a)
-set(LIBBACKTRACE_INCLUDE_DIR ${LIBBACKTRACE_PREFIX}/src/libbacktrace_project/src/libbacktrace)
+set(LIBBACKTRACE_INCLUDE_DIR ${LIBBACKTRACE_PREFIX}/src/libbacktrace_project/)
 file(MAKE_DIRECTORY ${LIBBACKTRACE_INCLUDE_DIR})
 ExternalProject_Add(libbacktrace_project
         GIT_REPOSITORY https://github.com/ianlancetaylor/libbacktrace.git
@@ -108,6 +108,7 @@ set_target_properties(backtrace_static PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${LIBBACKTRACE_INCLUDE_DIR}
 )
 add_dependencies(backtrace_static libbacktrace_project)
+include_directories(SYSTEM ${LIBBACKTRACE_INCLUDE_DIR})
 
 # Define the shared library (matches Visual Studio DynamicLibrary configuration)
 add_executable(
