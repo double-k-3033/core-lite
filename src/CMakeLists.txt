@@ -64,6 +64,13 @@ ExternalProject_Add(libbacktrace_project
         GIT_TAG master
         PREFIX ${LIBBACKTRACE_PREFIX}
         BINARY_DIR ${LIBBACKTRACE_BINARY_DIR}
+
+        UPDATE_COMMAND ""
+        LOG_CONFIGURE 1    # Hides the "checking..." lines
+        LOG_BUILD 1        # Hides the "libtool: compile..." lines
+        LOG_DOWNLOAD 1     # Hides the Git clone progress
+        LOG_INSTALL 1      # Hides the install step output
+
         # Run the Autotools configuration
         CONFIGURE_COMMAND <SOURCE_DIR>/configure --with-pic --enable-static --disable-shared
         # Build the project
