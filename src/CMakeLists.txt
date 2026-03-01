@@ -34,11 +34,17 @@ FetchContent_Declare(
         jsoncpp
         GIT_REPOSITORY https://github.com/open-source-parsers/jsoncpp.git
         GIT_TAG 1.9.6
-        # This flag is supported in newer CMake versions to achieve
-        # what we were doing manually with add_subdirectory
-        EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(jsoncpp)
+set(JSONCPP_FOUND TRUE CACHE BOOL "" FORCE)
+set(Jsoncpp_FOUND TRUE CACHE BOOL "" FORCE)
+set(JSONCPP_INCLUDE_DIRS "${jsoncpp_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+set(JSONCPP_INCLUDE_DIR "${jsoncpp_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+set(JSONCPP_LIBRARIES jsoncpp_static CACHE STRING "" FORCE)
+if(NOT TARGET Jsoncpp::Jsoncpp)
+    add_library(Jsoncpp::Jsoncpp ALIAS jsoncpp_static)
+endif()
+include_directories(${jsoncpp_SOURCE_DIR}/include)
 
 set(BUILD_DROGON_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
