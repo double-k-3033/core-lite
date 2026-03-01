@@ -5,6 +5,9 @@ project(qubic_core CXX ASM_NASM)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Force static libraries" FORCE)
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a") # Only look for static archives
+
 # Enable FetchContent module
 include(FetchContent)
 include(ExternalProject)
@@ -24,6 +27,7 @@ add_custom_command(
 )
 
 # Extra libraries
+set(BUILD_DROGON_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
         drogon
         GIT_REPOSITORY https://github.com/drogonframework/drogon.git
@@ -134,7 +138,14 @@ apply_common_compiler_flags(Qubic)
 target_link_libraries(Qubic
         platform_common
         platform_efi
-        Threads::Threads drogon fmt::fmt Blosc2::blosc2_static backtrace_static
+        -Wl,-Bstatic
+        drogon fmt::fmt Blosc2::blosc2_static backtrace_static
+        -Wl,-Bdynamic
+        Threads::Threads
+        dl
+        z
+        rt
+        m
 )
 
 # Configure linker settings based on compiler
