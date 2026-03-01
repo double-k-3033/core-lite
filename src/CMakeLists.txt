@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable FetchContent module
 include(FetchContent)
+include(ExternalProject)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -48,6 +49,31 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(blosc2)
 include_directories(${blosc2_SOURCE_DIR}/include)
+
+set(LIBBACKTRACE_PREFIX ${CMAKE_BINARY_DIR}/libbacktrace)
+set(LIBBACKTRACE_BINARY_DIR ${LIBBACKTRACE_PREFIX}/src/libbacktrace_project-build)
+set(LIBBACKTRACE_STATIC_LIB ${LIBBACKTRACE_BINARY_DIR}/.libs/libbacktrace.a)
+set(LIBBACKTRACE_INCLUDE_DIR ${LIBBACKTRACE_PREFIX}/src/libbacktrace_project/src/libbacktrace)
+file(MAKE_DIRECTORY ${LIBBACKTRACE_INCLUDE_DIR})
+ExternalProject_Add(libbacktrace_project
+        GIT_REPOSITORY https://github.com/ianlancetaylor/libbacktrace.git
+        GIT_TAG master
+        PREFIX ${LIBBACKTRACE_PREFIX}
+        BINARY_DIR ${LIBBACKTRACE_BINARY_DIR}
+        # Run the Autotools configuration
+        CONFIGURE_COMMAND <SOURCE_DIR>/configure --with-pic --enable-static --disable-shared
+        # Build the project
+        BUILD_COMMAND make -j${nproc}
+        # We don't want to install it to /usr/local, keep it in our build folder
+        INSTALL_COMMAND ""
+        BUILD_BYPRODUCTS ${LIBBACKTRACE_STATIC_LIB}
+)
+add_library(backtrace_static STATIC IMPORTED)
+set_target_properties(backtrace_static PROPERTIES
+        IMPORTED_LOCATION ${LIBBACKTRACE_STATIC_LIB}
+        INTERFACE_INCLUDE_DIRECTORIES ${LIBBACKTRACE_INCLUDE_DIR}
+)
+add_dependencies(backtrace_static libbacktrace_project)
 
 # Define the shared library (matches Visual Studio DynamicLibrary configuration)
 add_executable(
@@ -103,17 +129,12 @@ elseif(IS_MSVC)
 endif()
 
 find_package(Threads REQUIRED)
-find_library(BACKTRACE_LIB
-        NAMES libbacktrace.a
-        PATHS /usr/local/lib /usr/lib/x86_64-linux-gnu /usr/lib
-        NO_DEFAULT_PATH
-)
 
 apply_common_compiler_flags(Qubic)
 target_link_libraries(Qubic
         platform_common
         platform_efi
-        Threads::Threads drogon fmt::fmt Blosc2::blosc2_static ${BACKTRACE_LIB}
+        Threads::Threads drogon fmt::fmt Blosc2::blosc2_static backtrace_static
 )
 
 # Configure linker settings based on compiler
