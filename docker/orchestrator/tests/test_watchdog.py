@@ -37,7 +37,7 @@ def watchdog_deps():
         stuck_threshold_seconds=5,
         stuck_consecutive_polls=2,
         misaligned_threshold_votes=451,
-        misaligned_consecutive_polls=2,
+        misaligned_threshold_seconds=0,
         max_restarts=3,
         restart_cooldown_seconds=0,
         crash_restart_delay_seconds=0,
@@ -45,6 +45,7 @@ def watchdog_deps():
     node_client = AsyncMock()
     process_manager = MagicMock()
     process_manager.is_running.return_value = True
+    process_manager.shutdown_requested = False
     process_manager.restart = AsyncMock()
     alert_manager = AlertManager(AlertingConfig(enabled=False))
     return config, node_client, process_manager, alert_manager

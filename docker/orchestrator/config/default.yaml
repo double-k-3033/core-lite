@@ -40,7 +40,7 @@ watchdog:
   stuck_threshold_seconds: 300
   stuck_consecutive_polls: 3
   misaligned_threshold_votes: 451
-  misaligned_threshold_seconds: 300   # 5 min misaligned on same tick before restart
+  misaligned_threshold_seconds: 150   # 2.5 min misaligned on same tick before restart
   max_restarts: 5
   restart_cooldown_seconds: 600
   crash_restart_delay_seconds: 10
@@ -100,7 +100,7 @@ cleanup:
 
 # Local snapshot saver (periodic F8-style saves to disk)
 local_snapshot:
-  enabled: false                    # enable periodic local snapshot saves
+  enabled: true                     # enable periodic local snapshot saves
   interval_seconds: 3600            # save every hour
 
 # Alerting
