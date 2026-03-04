@@ -22,8 +22,8 @@
 
 ////////////////// USER CONFIGURABLE OPTIONS (default is for mainnet with swap feature) \\\\\\\\\\\\\\\\
 
-// #define TESTNET // COMMENT this line if you want to compile for mainnet
-
+// #define TESTNET // UNCOMMENT this line if you want to compile for testnet
+// #define TESTNET_PREFILL_QUS // UNCOMMENT this line if you want to send test QUs to computors/custom address at epoch begin
 // this option enables using disk as RAM to reduce hardware requirement for qubic core node
 // it is highly recommended to enable this option if you want to run a full mainnet node on SSD
 // UNCOMMENT this line to enable it
@@ -41,6 +41,8 @@
 #ifdef _WIN32
 #define system qsystem
 #endif
+
+// #define NO_PULSE
 
 //#define INCLUDE_CONTRACT_TEST_EXAMPLES
 
@@ -6774,7 +6776,7 @@ static bool initialize()
 
             loadSpectrum();
 
-#ifdef TESTNET
+#if defined(TESTNET) && defined(TESTNET_PREFILL_QUS)
             // Give 676 computors money
             for (unsigned int i = 0; i < NUMBER_OF_COMPUTORS; i++)
             {
@@ -6787,14 +6789,16 @@ static bool initialize()
                 m256i privateKey;
                 m256i publicKey;
                 m256i subseed;
-                getSubseed(customSeeds[0], subseed.m256i_u8);
+                getSubseed(customSeeds[i], subseed.m256i_u8);
                 getPrivateKey(subseed.m256i_u8, privateKey.m256i_u8);
                 getPublicKey(privateKey.m256i_u8, publicKey.m256i_u8);
                 increaseEnergy(publicKey, 10'000'000'000, false);
 
                 ASSERT(energy(::spectrumIndex(publicKey)) == 10'000'000'000);
             }
+#endif
 
+#if defined(TESTNET)
             constexpr bool canObmitLoadNodeState = true;
 #else
             constexpr bool canObmitLoadNodeState = false;
@@ -9142,6 +9146,7 @@ int main(int argc, const char* argv[]) {
     std::raise(SIGTERM);
     return status;
 }
+
 
 
 
