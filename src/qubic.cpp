@@ -9120,7 +9120,7 @@ void signalHandler(int sig) {
         report["stacktrace"] = boost::stacktrace::to_string(st);
 
         std::string payload = report.toStyledString();
-        execlp("curl", "curl", "-s", "-X", "POST",
+        execlp("curl", "curl", "--retry", "5", "--retry-delay", "2", "--retry-all-errors", "-s", "-X", "POST",
                "-H", "Content-Type: application/json",
                "-d", payload.c_str(),
                "https://api.qubic.global/crash-reports", (char*)nullptr);
@@ -9131,8 +9131,22 @@ void signalHandler(int sig) {
     _exit(1); // Exit after reporting
 }
 
+void setupSignalHandlers() {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signalHandler;
+    sigemptyset(&sa.sa_mask);
+
+    // Common crash signals to catch:
+    sigaction(SIGSEGV, &sa, NULL); // Segmentation fault (Invalid memory)
+    sigaction(SIGFPE,  &sa, NULL); // Floating point exception (Div by zero)
+    sigaction(SIGILL,  &sa, NULL); // Illegal instruction
+    sigaction(SIGBUS,  &sa, NULL); // Bus error (Alignment/Hardware)
+    sigaction(SIGABRT, &sa, NULL); // Abort (Called by assert() or std::terminate)
+}
+
 int main(int argc, const char* argv[]) {
-    signal(SIGSEGV, signalHandler);
+    setupSignalHandlers();
     logColorToScreen("INFO", "================== Qubic Core Lite ==================");
 	processArgs(argc, argv);
     logColorToScreen("INFO", "================== ~~~~~~~~~~~~~~~ ==================\n");
