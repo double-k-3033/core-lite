@@ -9024,7 +9024,7 @@ void processArgs(int argc, const char* argv[]) {
     }
 }
 
-#ifdef __linux__
+#if defined(__linux__) && !defined(NO_RPC)
 void watchAndCheckin()
 {
     // init start time
@@ -9089,7 +9089,7 @@ int main(int argc, const char* argv[]) {
 
     Overload::initializeUefi();
     QubicHttpServer::start();
-#ifdef __linux__
+#if defined(__linux__) && !defined(NO_RPC)
     watchAndCheckin();
 #endif
     auto status = (int)efi_main(ih, st);
