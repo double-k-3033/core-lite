@@ -9088,8 +9088,8 @@ int main(int argc, const char* argv[]) {
     logColorToScreen("INFO", "================== ~~~~~~~~~~~~~~~ ==================\n");
 
     Overload::initializeUefi();
-    QubicHttpServer::start();
 #if defined(__linux__) && !defined(NO_RPC)
+    QubicHttpServer::start();
     watchAndCheckin();
 #endif
     auto status = (int)efi_main(ih, st);
