@@ -4059,7 +4059,15 @@ static void beginEpoch()
     numberOfOwnComputorIndices = 0;
 #ifdef TESTNET
     broadcastedComputors.computors.epoch = system.epoch;
-    for (unsigned int i = 0; i < NUMBER_OF_COMPUTORS; i++)
+    int broadcastedComputorSeedsCount = std::size(broadcastedComputorSeeds);
+
+    if (broadcastedComputorSeedsCount != NUMBER_OF_COMPUTORS)
+    {
+        logToConsole(L"ERROR: broadcastedComputorSeedsCount != NUMBER_OF_COMPUTORS");
+        exit(1);
+    }
+
+    for (unsigned int i = 0; i < broadcastedComputorSeedsCount; i++)
     {
         m256i publicKey;
         m256i privateKey;
