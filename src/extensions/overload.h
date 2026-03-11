@@ -469,8 +469,11 @@ struct Overload {
     }
 
     static EFI_STATUS SetTime(IN EFI_TIME* Time) {
-        logToConsole(L"SetTime IS NOT IMPLEMENTED");
-        return EFI_UNSUPPORTED;
+        if (Time == nullptr) {
+            return EFI_INVALID_PARAMETER;
+        }
+        utcTime = *Time;
+        return EFI_SUCCESS;
     }
 
     ////////////// BootServices Implementation //////////////
@@ -1188,10 +1191,11 @@ struct Overload {
         ih = new EFI_HANDLE;
         st = new EFI_SYSTEM_TABLE;
         st->BootServices = new EFI_BOOT_SERVICES;
+        st->RuntimeServices = new EFI_RUNTIME_SERVICES;
         st->ConOut = new EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
         st->ConIn = new EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
         bs = st->BootServices;
-        rs = new EFI_RUNTIME_SERVICES;
+        rs = st->RuntimeServices;
 
         ////// RuntimeServices Implementation ///////
         rs->GetTime = Overload::GetTime;
