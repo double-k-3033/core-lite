@@ -377,11 +377,11 @@ struct Overload {
     };
 
     inline static std::vector<std::thread> threads;
-    inline static std::map<unsigned long long, SOCKET> incomingSocketMap;
-    inline static std::map<unsigned long long, TcpData> tcpDataMap;
-    inline static std::map<unsigned long long, EventData> eventDataMap;
-    inline static std::map<unsigned long long, bool> isReceiveThreadSetupMap;
-    inline static std::map<unsigned long long, bool> isSendThreadSetupMap;
+    inline static std::unordered_map<unsigned long long, SOCKET> incomingSocketMap;
+    inline static std::unordered_map<unsigned long long, TcpData> tcpDataMap;
+    inline static std::unordered_map<unsigned long long, EventData> eventDataMap;
+    inline static std::unordered_map<unsigned long long, bool> isReceiveThreadSetupMap;
+    inline static std::unordered_map<unsigned long long, bool> isSendThreadSetupMap;
     inline static EventQueue<TransmitRequest> transmitQueue;
     inline static EventQueue<ReceiveRequest> receiveQueue;
 
@@ -996,7 +996,10 @@ struct Overload {
             CreateChild(NULL, &ListenToken->NewChildHandle);
             // At this point we dont know the tcp4Protocol for this peer (tcp4Protocol will be inititialzed in peerConnectionNewlyEstablished())
             // so we map the clientSocket to the handle to process it later in peerConnectionNewlyEstablished()
-            incomingSocketMap[(unsigned long long)ListenToken->NewChildHandle] = clientSocket;
+            {
+                std::lock_guard<std::mutex> lock(networkingLock);
+                incomingSocketMap[(unsigned long long)ListenToken->NewChildHandle] = clientSocket;
+            }
             ListenToken->CompletionToken.Status = EFI_SUCCESS;
             tcpData->connectStatus = ConnectStatus::Connected;
             });
@@ -1223,6 +1226,9 @@ struct Overload {
         transmitProcessorThread.detach();
         std::thread receiveProcessorThread(receiveProcessor);
         receiveProcessorThread.detach();
+
+        // Reserve space
+        incomingSocketMap.reserve(1024);
     }
 };
 
