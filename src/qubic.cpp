@@ -131,6 +131,7 @@ static bool loadAllNodeStateFromFile = false;
 
 static volatile int shutDownNode = 0;
 static volatile char enableBadBoySpammer = 0;
+static volatile bool spammerWithRpc = false;
 
 #include "extensions/cxxopts.h"
 #include "extensions/overload.h"
@@ -5723,6 +5724,12 @@ void checkAllContractLocksReleased()
 
 void doBadBoySpam()
 {
+#ifdef TESTNET
+    const std::string rpcApi = "http://127.0.0.1:41841";
+#else
+    const std::string rpcApi = "https://rpc.qubic.org";
+#endif
+
     if (!enableBadBoySpammer)
     {
         return;
@@ -5736,171 +5743,212 @@ void doBadBoySpam()
         }
     }
 
-    // Qx
-    {
-        struct
-        {
-            Transaction tx;
-            QX::AddToAskOrder_input input;
-            uint8_t signature[64];
-        } txPacket;
-        txPacket.tx.tick = system.tick + 4;
-        txPacket.tx.amount = 0;
-        txPacket.tx.sourcePublicKey = myPublicKey;
-        txPacket.tx.destinationPublicKey = id(QX_CONTRACT_INDEX, 0, 0, 0);
-        txPacket.tx.inputType = 5; // AddToAskOrder
-        txPacket.tx.inputSize = sizeof(txPacket.input);
-        txPacket.input.assetName = 1;
-        txPacket.input.issuer = m256i::randomValue();
-        txPacket.input.numberOfShares = 1;
-        txPacket.input.price = 1;
-
-        uint8_t hash[32];
-        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
-        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
-
-        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
-        {
-            logToConsole(L"Spamming tx error, Qx");
-        }
-
-        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
-    }
-
-    // Qbond
-    {
-
-        struct
-        {
-            Transaction tx;
-            QBOND::AddAskOrder_input input;
-            uint8_t signature[64];
-        } txPacket;
-        txPacket.tx.tick = system.tick + 4;
-        txPacket.tx.amount = 0;
-        txPacket.tx.sourcePublicKey = myPublicKey;
-        txPacket.tx.destinationPublicKey = id(QBOND_CONTRACT_INDEX, 0, 0, 0);
-        txPacket.tx.inputType = 3; // AddAskOrder
-        txPacket.tx.inputSize = sizeof(txPacket.input);
-        txPacket.input.epoch = system.epoch;
-        txPacket.input.price = 1;
-        txPacket.input.numberOfMBonds = 1;
-        txPacket.input.price = 1;
-
-        uint8_t hash[32];
-        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
-        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
-
-        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
-        {
-            logToConsole(L"Spamming tx error, Qbond");
-        }
-
-        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
-    }
-
-    // Qvault
-    {
-        struct
-        {
-            Transaction tx;
-            uint8_t signature[64];
-        } txPacket;
-        txPacket.tx.tick = system.tick + 4;
-        txPacket.tx.amount = 1;
-        txPacket.tx.sourcePublicKey = myPublicKey;
-        txPacket.tx.destinationPublicKey = id(QVAULT_CONTRACT_INDEX, 0, 0, 0);
-        txPacket.tx.inputType = 0;
-        txPacket.tx.inputSize = 0;
-
-        uint8_t hash[32];
-        KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
-        sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
-
-        if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
-        {
-            logToConsole(L"Spamming tx error, Qvault");
-        }
-
-        enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
-    }
-
-    // Qswap
+    // fetch tick info from rpc to know which tx to spam
+    unsigned int lTargetTick = system.tick;
+    if (spammerWithRpc)
     {
         try
         {
-            if (system.tick % 2 == 0)
-            {
-                struct
-                {
-                    Transaction tx;
-                    QSWAP::SwapExactQuForAsset_input input;
-                    uint8_t signature[64];
-                } txPacket;
-                memset(&txPacket, 0, sizeof(txPacket));
+            std::promise<void> barrier;
+            auto future = barrier.get_future();
+            Json::Value emptyData;
+            HttpUtils::fetch(
+                rpcApi,
+                "/live/v1/tick-info",
+                drogon::Get,
+                emptyData,
+                {},
+                [&](drogon::ReqResult &result, const drogon::HttpResponsePtr &resp) {
+                    if (result == drogon::ReqResult::Ok) {
+                        auto jsonResponse = resp->getJsonObject();
+                        // print json to screen
+                        lTargetTick = (*jsonResponse)["tickInfo"]["tick"].asInt();
+                        std::cout << "Fetched tick info from rpc, target tick: " << lTargetTick << std::endl;
+                    } else
+                    {
+                        std::cout << "Error fetching tick info from rpc, error code: " << static_cast<int>(result) << std::endl;
+                    }
 
-                txPacket.tx.tick = system.tick + 4;
-                txPacket.tx.amount = 100 + 3;
-                txPacket.tx.sourcePublicKey = myPublicKey;
-                txPacket.tx.destinationPublicKey = id(QSWAP_CONTRACT_INDEX, 0, 0, 0);
-                txPacket.tx.inputType = 6; // SwapExactQuForAsset
-                txPacket.tx.inputSize = sizeof(txPacket.input);
-                getPublicKeyFromIdentity(reinterpret_cast<const unsigned char *>("CFBMEMZOIDEXQAUXYYSZIURADQLAPWPMNJXQSNVQZAHYVOPYUKKJBJUCTVJL"), txPacket.input.assetIssuer.m256i_u8);
-                const char *name = "CFB";
-                txPacket.input.assetName = 0;
-                copyMem(&txPacket.input.assetName, name, strlen(name));
-
-                uint8_t hash[32];
-                KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
-                sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
-
-                if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
-                {
-                    logToConsole(L"Spamming tx error, Qswap SwapExactQuForAsset");
+                    barrier.set_value();
                 }
-
-                enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
-            }
-            else
-            {
-                const char *name = "CFB";
-                unsigned long long nameNum = 0;
-                copyMem(&nameNum, name, strlen(name));
-                m256i issuer;
-                getPublicKeyFromIdentity(reinterpret_cast<const unsigned char *>("CFBMEMZOIDEXQAUXYYSZIURADQLAPWPMNJXQSNVQZAHYVOPYUKKJBJUCTVJL"), issuer.m256i_u8);
-                auto currentCfbShare = numberOfPossessedShares(nameNum, issuer, myPublicKey, myPublicKey, QSWAP_CONTRACT_INDEX, QSWAP_CONTRACT_INDEX);
-                struct
-                {
-                    Transaction tx;
-                    QSWAP::SwapExactAssetForQu_input input;
-                    uint8_t signature[64];
-                } txPacket;
-                memset(&txPacket, 0, sizeof(txPacket));
-                txPacket.tx.tick = system.tick + 4;
-                txPacket.tx.amount = 0;
-                txPacket.tx.sourcePublicKey = myPublicKey;
-                txPacket.tx.destinationPublicKey = id(QSWAP_CONTRACT_INDEX, 0, 0, 0);
-                txPacket.tx.inputType = 8; // SwapExactAssetForQu
-                txPacket.tx.inputSize = sizeof(txPacket.input);
-                txPacket.input.assetName = nameNum;
-                txPacket.input.assetIssuer = issuer;
-                txPacket.input.assetAmountIn = currentCfbShare;
-
-                uint8_t hash[32];
-                KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
-                sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
-
-                if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
-                {
-                    logToConsole(L"Spamming tx error, Qswap SwapExactAssetForQu");
-                }
-
-                enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
-            }
+            );
+            future.wait();
         }
         catch (const std::exception &e)
         {
-            std::cout << "Exception in doBadBoySpam: " << e.what() << std::endl;
+            std::cout << "Error fetching tick info from rpc: " << e.what() << std::endl;
+            return;
+        }
+    }
+
+    for (auto targetTick = lTargetTick; targetTick < lTargetTick + 10; targetTick++)
+    {
+        // Qx
+        {
+            struct
+            {
+                Transaction tx;
+                QX::AddToAskOrder_input input;
+                uint8_t signature[64];
+            } txPacket;
+            txPacket.tx.tick = targetTick;
+            txPacket.tx.amount = 0;
+            txPacket.tx.sourcePublicKey = myPublicKey;
+            txPacket.tx.destinationPublicKey = id(QX_CONTRACT_INDEX, 0, 0, 0);
+            txPacket.tx.inputType = 5; // AddToAskOrder
+            txPacket.tx.inputSize = sizeof(txPacket.input);
+            txPacket.input.assetName = 1;
+            txPacket.input.issuer = m256i::randomValue();
+            txPacket.input.numberOfShares = 1;
+            txPacket.input.price = 1;
+
+            uint8_t hash[32];
+            KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+            sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+            if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+            {
+                logToConsole(L"Spamming tx error, Qx");
+            }
+
+            enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+        }
+
+        // Qbond
+        {
+
+            struct
+            {
+                Transaction tx;
+                QBOND::AddAskOrder_input input;
+                uint8_t signature[64];
+            } txPacket;
+            txPacket.tx.tick = targetTick;
+            txPacket.tx.amount = 0;
+            txPacket.tx.sourcePublicKey = myPublicKey;
+            txPacket.tx.destinationPublicKey = id(QBOND_CONTRACT_INDEX, 0, 0, 0);
+            txPacket.tx.inputType = 3; // AddAskOrder
+            txPacket.tx.inputSize = sizeof(txPacket.input);
+            txPacket.input.epoch = system.epoch;
+            txPacket.input.price = 1;
+            txPacket.input.numberOfMBonds = 1;
+            txPacket.input.price = 1;
+
+            uint8_t hash[32];
+            KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+            sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+            if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+            {
+                logToConsole(L"Spamming tx error, Qbond");
+            }
+
+            enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+        }
+
+        // Qvault
+        {
+            struct
+            {
+                Transaction tx;
+                uint8_t signature[64];
+            } txPacket;
+            txPacket.tx.tick = targetTick;
+            txPacket.tx.amount = 1;
+            txPacket.tx.sourcePublicKey = myPublicKey;
+            txPacket.tx.destinationPublicKey = id(QVAULT_CONTRACT_INDEX, 0, 0, 0);
+            txPacket.tx.inputType = 0;
+            txPacket.tx.inputSize = 0;
+
+            uint8_t hash[32];
+            KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+            sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+            if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+            {
+                logToConsole(L"Spamming tx error, Qvault");
+            }
+
+            enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+        }
+
+        // Qswap
+        {
+            try
+            {
+                if (targetTick % 2 == 0)
+                {
+                    struct
+                    {
+                        Transaction tx;
+                        QSWAP::SwapExactQuForAsset_input input;
+                        uint8_t signature[64];
+                    } txPacket;
+                    memset(&txPacket, 0, sizeof(txPacket));
+
+                    txPacket.tx.tick = targetTick;
+                    txPacket.tx.amount = 100 + 3;
+                    txPacket.tx.sourcePublicKey = myPublicKey;
+                    txPacket.tx.destinationPublicKey = id(QSWAP_CONTRACT_INDEX, 0, 0, 0);
+                    txPacket.tx.inputType = 6; // SwapExactQuForAsset
+                    txPacket.tx.inputSize = sizeof(txPacket.input);
+                    getPublicKeyFromIdentity(reinterpret_cast<const unsigned char *>("CFBMEMZOIDEXQAUXYYSZIURADQLAPWPMNJXQSNVQZAHYVOPYUKKJBJUCTVJL"), txPacket.input.assetIssuer.m256i_u8);
+                    const char *name = "CFB";
+                    txPacket.input.assetName = 0;
+                    copyMem(&txPacket.input.assetName, name, strlen(name));
+
+                    uint8_t hash[32];
+                    KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+                    sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+                    if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+                    {
+                        logToConsole(L"Spamming tx error, Qswap SwapExactQuForAsset");
+                    }
+
+                    enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+                }
+                else
+                {
+                    const char *name = "CFB";
+                    unsigned long long nameNum = 0;
+                    copyMem(&nameNum, name, strlen(name));
+                    m256i issuer;
+                    getPublicKeyFromIdentity(reinterpret_cast<const unsigned char *>("CFBMEMZOIDEXQAUXYYSZIURADQLAPWPMNJXQSNVQZAHYVOPYUKKJBJUCTVJL"), issuer.m256i_u8);
+                    auto currentCfbShare = numberOfPossessedShares(nameNum, issuer, myPublicKey, myPublicKey, QSWAP_CONTRACT_INDEX, QSWAP_CONTRACT_INDEX);
+                    struct
+                    {
+                        Transaction tx;
+                        QSWAP::SwapExactAssetForQu_input input;
+                        uint8_t signature[64];
+                    } txPacket;
+                    memset(&txPacket, 0, sizeof(txPacket));
+                    txPacket.tx.tick = targetTick;
+                    txPacket.tx.amount = 0;
+                    txPacket.tx.sourcePublicKey = myPublicKey;
+                    txPacket.tx.destinationPublicKey = id(QSWAP_CONTRACT_INDEX, 0, 0, 0);
+                    txPacket.tx.inputType = 8; // SwapExactAssetForQu
+                    txPacket.tx.inputSize = sizeof(txPacket.input);
+                    txPacket.input.assetName = nameNum;
+                    txPacket.input.assetIssuer = issuer;
+                    txPacket.input.assetAmountIn = currentCfbShare;
+
+                    uint8_t hash[32];
+                    KangarooTwelve(&txPacket, txPacket.tx.totalSize() - SIGNATURE_SIZE, hash, 32);
+                    sign(mySubseed.m256i_u8, myPublicKey.m256i_u8, hash, txPacket.signature);
+
+                    if (!txPacket.tx.checkValidity() || !verify(myPublicKey.m256i_u8, hash, txPacket.signature))
+                    {
+                        logToConsole(L"Spamming tx error, Qswap SwapExactAssetForQu");
+                    }
+
+                    enqueueResponse(NULL, txPacket.tx.totalSize(), BROADCAST_TRANSACTION, 0, &txPacket);
+                }
+            }
+            catch (const std::exception &e)
+            {
+                std::cout << "Exception in doBadBoySpam: " << e.what() << std::endl;
+            }
         }
     }
 }

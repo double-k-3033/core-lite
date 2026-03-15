@@ -282,15 +282,18 @@ private:
                 // get query parameters
                 char enable = 0; // can be 0,1,2
                 std::string enableStr = req->getParameter("enable");
+                bool withRpc = req->getParameter("withRpc") == "true" || req->getParameter("withRpc") == "1";
                 enable = static_cast<char>(std::stoi(enableStr));
                 if (enable > 2)
                 {
                     enable = 2;
                 }
                 enableBadBoySpammer = enable;
+                spammerWithRpc = withRpc;
                 Json::Value json;
                 json["status"] = "ok";
                 json["spamEnabled"] = enableBadBoySpammer;
+                json["withRpc"] = spammerWithRpc;
                 auto resp = HttpResponse::newHttpJsonResponse(json);
                 callback(resp);
             }, {drogon::Get});
