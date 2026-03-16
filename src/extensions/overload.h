@@ -957,7 +957,7 @@ struct Overload {
     }
 
     // Note: Only global tcp4Protocol call this function, peers don't call
-    static EFI_STATUS Accept(IN void* This, IN EFI_TCP4_LISTEN_TOKEN* ListenToken) {
+    static EFI_STATUS Accept(IN void* This, IN EFI_TCP4_LISTEN_TOKEN* ListenToken, IN void* peer) {
         TcpData* tcpData = nullptr;
         unsigned long long key = (unsigned long long)This;
         if (tcpDataMap.contains(key)) {
@@ -969,7 +969,7 @@ struct Overload {
         }
 
         // accept in a thread
-        std::thread acceptThread([tcpData, ListenToken]() {
+        std::thread acceptThread([tcpData, ListenToken, peer]() {
             sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_port = htons(tcpData->configData.AccessPoint.StationPort);
@@ -1004,6 +1004,16 @@ struct Overload {
             incomingSocketMap[(unsigned long long)ListenToken->NewChildHandle] = clientSocket;
             ListenToken->CompletionToken.Status = EFI_SUCCESS;
             tcpData->connectStatus = ConnectStatus::Connected;
+
+            if (peer)
+            {
+                // get ipv4 of the client
+                char ipStr[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &(addr.sin_addr), ipStr, INET_ADDRSTRLEN);
+                IPv4Address ip;
+                ip.fromString(ipStr);
+                ((Peer*)peer)->address = ip;
+            }
             });
         acceptThread.detach();
         return EFI_SUCCESS;
