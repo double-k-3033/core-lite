@@ -61,7 +61,7 @@ std::string getQubicVersionString()
            std::to_string(VERSION_C);
 }
 
-Json::Value getCheckInData()
+Json::Value getCheckInData(const std::string& challenge = "")
 {
     static auto startTime = std::chrono::system_clock::now();
 
@@ -85,6 +85,11 @@ Json::Value getCheckInData()
                                        std::chrono::system_clock::now().time_since_epoch()).count();
         checkinData["uptime"] = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now() - startTime).count();
+
+        if (!challenge.empty())
+        {
+            checkinData["challenge"] = challenge;
+        }
 
         uint8_t hash[32];
         auto checkinBytes = jsonToBytes(checkinData);
@@ -925,8 +930,10 @@ struct Overload {
             addr.sin_addr.s_addr = INADDR_ANY;
 
             int opt = 1;
+            int buf_size = 16 * 1024 * 1024; // 16MB
             setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
-
+            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (char*)&buf_size, sizeof(buf_size));
+            setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (char*)&buf_size, sizeof(buf_size));
             if (bind(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
                 logToConsole(L"Failed to bind socket!");
                 closesocket(sock);
@@ -952,7 +959,7 @@ struct Overload {
     }
 
     // Note: Only global tcp4Protocol call this function, peers don't call
-    static EFI_STATUS Accept(IN void* This, IN EFI_TCP4_LISTEN_TOKEN* ListenToken) {
+    static EFI_STATUS Accept(IN void* This, IN EFI_TCP4_LISTEN_TOKEN* ListenToken, IN void* peer) {
         TcpData* tcpData = nullptr;
         unsigned long long key = (unsigned long long)This;
         if (tcpDataMap.contains(key)) {
@@ -964,7 +971,7 @@ struct Overload {
         }
 
         // accept in a thread
-        std::thread acceptThread([tcpData, ListenToken]() {
+        std::thread acceptThread([tcpData, ListenToken, peer]() {
             sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_port = htons(tcpData->configData.AccessPoint.StationPort);
@@ -976,7 +983,24 @@ struct Overload {
             #endif
             tcpData->connectStatus = ConnectStatus::Connecting;
             SOCKET clientSocket = accept(tcpData->socket, (sockaddr*)&addr, &addrlen);
-            if (listOfPeersIsStaticLiteNode)
+
+            int buf_size = 16 * 1024 * 1024; // 16MB
+            setsockopt(clientSocket, SOL_SOCKET, SO_RCVBUF, (char*)&buf_size, sizeof(buf_size));
+            setsockopt(clientSocket, SOL_SOCKET, SO_SNDBUF, (char*)&buf_size, sizeof(buf_size));
+
+            bool isLocal = false;
+            if (peer)
+            {
+                // get ipv4 of the client
+                char ipStr[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &(addr.sin_addr), ipStr, INET_ADDRSTRLEN);
+                IPv4Address ip;
+                ip.fromString(ipStr);
+                ((Peer*)peer)->address = ip;
+                isLocal = (ip == IPv4Address::getLocalIp());
+            }
+
+            if (listOfPeersIsStaticLiteNode && !isLocal)
             {
                 logToConsole(L"Static network mode, rejected a incomming connection");
                 ListenToken->CompletionToken.Status = EFI_ABORTED;
@@ -1222,10 +1246,13 @@ struct Overload {
         st->ConIn->ReadKeyStroke = Overload::ReadKeyStroke;
 
         // Open transmit and receive processor threads
-        std::thread transmitProcessorThread(transmitProcessor);
-        transmitProcessorThread.detach();
-        std::thread receiveProcessorThread(receiveProcessor);
-        receiveProcessorThread.detach();
+        for (int i = 0; i < NUMBER_OF_INCOMING_CONNECTIONS + NUMBER_OF_OUTGOING_CONNECTIONS; i++)
+        {
+            std::thread transmitProcessorThread(transmitProcessor);
+            transmitProcessorThread.detach();
+            std::thread receiveProcessorThread(receiveProcessor);
+            receiveProcessorThread.detach();
+        }
 
         // Reserve space
         incomingSocketMap.reserve(1024);

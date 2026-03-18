@@ -92,6 +92,13 @@ typedef union IPv4Address
     uint8_t     u8[4];
     uint32_t    u32;
 
+    static IPv4Address getLocalIp()
+    {
+        IPv4Address localIp{};
+        localIp.fromString("127.0.0.1");
+        return localIp;
+    }
+
     void fromString(std::string str) {
         size_t pos = 0;
         for (int i = 0; i < 4; i++) {
