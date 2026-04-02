@@ -37,7 +37,7 @@
 #define system qsystem
 #endif
 
-// #define NO_QSURV
+// #define NO_QUSINO
 
 //#define INCLUDE_CONTRACT_TEST_EXAMPLES
 
@@ -191,6 +191,8 @@ static volatile bool systemMustBeSaved = false, spectrumMustBeSaved = false, uni
 
 static int misalignedState = 0;
 
+static bool forceVerifySolutions = false;
+
 static volatile unsigned char epochTransitionState = 0;
 static volatile unsigned char epochTransitionCleanMemoryFlag = 1;
 static volatile long epochTransitionWaitingRequestProcessors = 0;
@@ -256,6 +258,11 @@ static unsigned long long contractProcessorIDs[MAX_NUMBER_OF_PROCESSORS]; // a l
 
 static unsigned long long solutionProcessorIDs[MAX_NUMBER_OF_PROCESSORS]; // a list of proc id that will process solution
 static bool solutionProcessorFlags[MAX_NUMBER_OF_PROCESSORS]; // flag array to indicate that whether a procId should help processing solutions or not
+static bool preprocessSolutionFlags[MAX_NUMBER_OF_PROCESSORS]; // subset of solution processors for pre-computing scores at broadcast time
+static_assert(
+    NUMBER_OF_PREPROCESS_SOLUTION_PROCESSORS <= NUMBER_OF_SOLUTION_PROCESSORS / 2,
+    "NUMBER_OF_PREPROCESS_SOLUTION_PROCESSORS must not exceed half of NUMBER_OF_SOLUTION_PROCESSORS");
+
 static int nTickProcessorIDs = 0;
 static int nRequestProcessorIDs = 0;
 static int nContractProcessorIDs = 0;
@@ -821,9 +828,14 @@ static void processBroadcastMessage(const unsigned long long processorNumber, Re
                                         {
                                             unsigned int solutionScore = (*score)(processorNumber, request->destinationPublicKey, solution_miningSeed, solution_nonce);
                                             score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(solution_nonce.m256i_u8);
-                                            const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+                                            int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
                                                 solutionThreshold[system.epoch][selectedAlgo]
                                                 : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
+                                            if (selectedAlgo == score_engine::AlgoType::Addition
+                                                && system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
+                                            {
+                                                threshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
+                                            }
                                             if (system.numberOfSolutions < MAX_NUMBER_OF_SOLUTIONS
                                                 && score->isValidScore(solutionScore, selectedAlgo)
                                                 && score->isGoodScore(solutionScore, threshold, selectedAlgo))
@@ -1115,7 +1127,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
     }
 }
 
-static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* header)
+static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* header, unsigned long long processorNumber)
 {
     Transaction* request = header->getPayload<Transaction>();
     const unsigned int transactionSize = request->totalSize();
@@ -1173,6 +1185,23 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                 }
             }
             ts.tickData.releaseLock();
+
+            // Pre-compute score for mining solution transactions to populate the scoreCache.
+            // This hides computation latency: the solution is published ~3 ticks before execution,
+            // so all 676 Computors get a cache HIT during processTickTransactionSolution().
+            // Only designated solution processors do this to avoid starving request processing.
+            // The deposit and balance of must be >= MiningSolutionTransaction::minAmount() to be proccessed
+            if (preprocessSolutionFlags[processorNumber]
+                && MiningSolutionTransaction::isSolutionTransaction(request))
+            {
+                const int spectrumIdx = spectrumIndex(request->sourcePublicKey);
+                if (spectrumIdx >= 0 && energy(spectrumIdx) >= MiningSolutionTransaction::minAmount())
+                {
+                    const m256i& solutionMiningSeed = *(m256i*)request->inputPtr();
+                    const m256i& solutionNonce = *(m256i*)(request->inputPtr() + 32);
+                    (*score)(processorNumber, request->sourcePublicKey, solutionMiningSeed, solutionNonce);
+                }
+            }
 
             // shortcut: oracle reply reveal transactions are analyzed immediately after receiving them (before execution of the tx),
             // in order to minimize the number of reveal transaction (one per oracle query is enough, so no reveal tx is generated
@@ -1541,6 +1570,10 @@ static void processRequestSystemInfo(Peer* peer, RequestResponseHeader* header)
     respondedSystemInfo.randomMiningSeed = score->currentRandomSeed;
     respondedSystemInfo.solutionThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::HyperIdentity] : HYPERIDENTITY_SOLUTION_THRESHOLD_DEFAULT;
     respondedSystemInfo.solutionAdditionalThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::Addition] : ADDITION_SOLUTION_THRESHOLD_DEFAULT;
+    if (system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
+    {
+        respondedSystemInfo.solutionAdditionalThreshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
+    }
 
     respondedSystemInfo.totalSpectrumAmount = spectrumInfo.totalAmount;
     respondedSystemInfo.currentEntityBalanceDustThreshold = (dustThresholdBurnAll > dustThresholdBurnHalf) ? dustThresholdBurnAll : dustThresholdBurnHalf;
@@ -2361,7 +2394,7 @@ static void requestProcessor(void* ProcedureArgument, unsigned long long process
 
                 case BROADCAST_TRANSACTION:
                 {
-                    processBroadcastTransaction(peer, header);
+                    processBroadcastTransaction(peer, header, processorNumber);
                 }
                 break;
 
@@ -2887,14 +2920,19 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
     {
         minerSolutionFlags[flagIndex >> 6] |= (1ULL << (flagIndex & 63));
         score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(transaction->nonce.m256i_u8);
-        const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
-                solutionThreshold[system.epoch][selectedAlgo]
-                : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
+        int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+             solutionThreshold[system.epoch][selectedAlgo]
+             : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
+        if (selectedAlgo == score_engine::AlgoType::Addition
+            && system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
+        {
+            threshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
+        }
 #ifdef TESTNET
         unsigned int solutionScore = (*::score)(processorNumber, transaction->sourcePublicKey, transaction->miningSeed, transaction->nonce);
 #else
         unsigned int solutionScore;
-        if (isMainMode() || isRevalidation || isLastTickInEpoch())
+        if (isMainMode() || isRevalidation || isLastTickInEpoch() || forceVerifySolutions)
         {
             solutionScore = (*::score)(processorNumber, transaction->sourcePublicKey, transaction->miningSeed, transaction->nonce);
         } else
@@ -6689,6 +6727,8 @@ static void contractProcessorShutdownCallback(EFI_EVENT Event, void* Context)
 // forceLoadFromFile: when loading node states from file, we want to make sure it load from file and ignore constructionEpoch == system.epoch case
 static bool loadContractStateFiles(CHAR16* directory, bool forceLoadFromFile)
 {
+    // Make sure you define all contracts that are allowed to be padded automatically in contract_def.h
+
     logToConsole(L"Loading contract files ...");
     for (unsigned int contractIndex = 0; contractIndex < contractCount; contractIndex++)
     {
@@ -6718,6 +6758,39 @@ static bool loadContractStateFiles(CHAR16* directory, bool forceLoadFromFile)
                 }
                 else
                 {
+                    // Check if this contract is allowed to be zero-padded from a smaller file
+                    bool paddingAllowed = false;
+                    for (unsigned int i = 0; i < paddableCount; i++)
+                    {
+                        if (paddableContracts[i] == contractIndex)
+                        {
+                            paddingAllowed = true;
+                            break;
+                        }
+                    }
+
+                    if (paddingAllowed)
+                    {
+                        long long actualSize = getFileSize(CONTRACT_FILE_NAME, directory);
+                        if (actualSize > 0 && (unsigned long long)actualSize < contractDescriptions[contractIndex].stateSize)
+                        {
+                            // Zero the entire buffer, then load the smaller file into the front
+                            setMem(contractStates[contractIndex], contractDescriptions[contractIndex].stateSize, 0);
+                            long long reloadedSize = load(CONTRACT_FILE_NAME, (unsigned long long)actualSize, contractStates[contractIndex], directory);
+                            if (reloadedSize == actualSize)
+                            {
+                                appendText(message, L" WARNING: undersized file (");
+                                appendNumber(message, (unsigned long long)actualSize, FALSE);
+                                appendText(message, L" < ");
+                                appendNumber(message, contractDescriptions[contractIndex].stateSize, FALSE);
+                                appendText(message, L" bytes), zero-padded");
+                                logToConsole(message);
+                                continue;
+                            }
+                            // Reload also failed — fall through to error
+                        }
+                    }
+
                     appendText(message, L" cannot be read successfully");
                     logToConsole(message);
                     logStatusToConsole(L"EFI_FILE_PROTOCOL.Read() reads invalid number of bytes", loadedSize, __LINE__);
@@ -8315,6 +8388,7 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
         for (int i = 0; i < MAX_NUMBER_OF_PROCESSORS; i++)
         {
             solutionProcessorFlags[i] = false;
+            preprocessSolutionFlags[i] = false;
         }
 
         for (unsigned int i = 0; i < numberOfAllProcessors && numberOfProcessors < MAX_NUMBER_OF_PROCESSORS_DYNAMIC; i++)
@@ -8366,6 +8440,10 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                     {
                         solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC] = true;
                         solutionProcessorFlags[i] = true;
+                        if (nSolutionProcessorIDs < NUMBER_OF_PREPROCESS_SOLUTION_PROCESSORS)
+                        {
+                            preprocessSolutionFlags[i] = true;
+                        }
                         solutionProcessorIDs[nSolutionProcessorIDs++] = i;
                     }
                 }
@@ -9048,6 +9126,7 @@ void processArgs(int argc, const char* argv[]) {
         ("o, operator", "Operator id", cxxopts::value<std::string>())
         ("op, operator-seed", "Lite node seed", cxxopts::value<std::string>())
 		("oa,operator-alias", "Operator alias for RPC tick-info", cxxopts::value<std::string>())
+        ("fv, force-verify-solutions", "Passcode to access http server", cxxopts::value<bool>())
         ("s,security-tick", "Core will verify state after x tick, to reduce computational to the node", cxxopts::value<int>()->default_value("1"));
     auto result = options.parse(argc, argv);
 
@@ -9238,6 +9317,12 @@ void processArgs(int argc, const char* argv[]) {
             std::cerr << std::endl;
             exit(1);
         }
+    }
+
+    if (result.count("force-verify-solutions"))
+    {
+        forceVerifySolutions = true;
+        logColorToScreen("INFO", "Force verify solutions enabled");
     }
 }
 
