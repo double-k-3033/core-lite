@@ -277,6 +277,8 @@ static volatile char solutionsLock = 0;
 static unsigned long long* minerSolutionFlags = NULL;
 static volatile m256i minerPublicKeys[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int minerScores[MAX_NUMBER_OF_MINERS + 1];
+static volatile m256i minerPublicKeysRollback[MAX_NUMBER_OF_MINERS + 1];
+static volatile unsigned int minerScoresRollback[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int numberOfMiners = NUMBER_OF_COMPUTORS;
 static m256i competitorPublicKeys[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static unsigned int competitorScores[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
@@ -3712,6 +3714,9 @@ static void processTick(unsigned long long processorNumber)
         setMem(spectrumDataRollback, sizeof(spectrumDataRollback), 0);
         resourceTestingDigestRollback = resourceTestingDigest;
 
+        copyMem((void*)minerPublicKeysRollback, (void*)minerPublicKeys, sizeof(minerPublicKeys));
+        copyMem((void*)minerScoresRollback, (void*)minerScores, sizeof(minerScores));
+
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
         for (unsigned int transactionIndex = 0; transactionIndex < NUMBER_OF_TRANSACTIONS_PER_TICK; transactionIndex++)
@@ -5775,6 +5780,10 @@ static bool isTickTimeOut()
 
 void reprocessSolutionTransaction(unsigned long long processorNumber)
 {
+    // first rollback the miner scores data
+    copyMem((void*)minerPublicKeys, (void*)minerPublicKeysRollback, sizeof(minerPublicKeysRollback));
+    copyMem((void*)minerScores, (void*)minerScoresRollback, sizeof(minerScoresRollback));
+
     auto tsCurrentTickTransactionOffsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(system.tick);
 
     unsigned long long solutionProcessStartTick = __rdtsc(); // for tracking the time processing solutions
