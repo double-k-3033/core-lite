@@ -1680,7 +1680,9 @@ static void processBroadcastCustomMiningTask(RequestResponseHeader* header)
     if (verify(dogeDispatcherPubkey, digest.m256i_u8, payload + (messageSize - SIGNATURE_SIZE)))
     {
         enqueueResponse(NULL, header);
+#ifdef SEND_DOGE_ORACLE_QUERIES
         customQubicMiningStorage.addTask(reinterpret_cast<const CustomQubicMiningTask*>(payload), messageSize - SIGNATURE_SIZE);
+#endif
     }
 }
 
@@ -1741,7 +1743,7 @@ static void processBroadcastCustomMiningSolution(RequestResponseHeader* header)
 
                         auto* tx = reinterpret_cast<OracleUserQueryTransactionPrefix*>(buffer);
                         tx->sourcePublicKey = computorPublicKeys[i];
-                        tx->destinationPublicKey = { 0 };
+                        tx->destinationPublicKey = m256i::zero();
                         tx->amount = 0;
                         tx->tick = system.tick + 8; // offset of 8 ticks to ensure propagation through the network
                         tx->inputType = OracleUserQueryTransactionPrefix::transactionType();
