@@ -112,10 +112,12 @@
 
 #include "files/files.h"
 #include "mining/mining.h"
+#include "mining/custom_qubic_mining_storage.h"
 
 #include "oracle_core/oracle_engine.h"
 #include "oracle_core/net_msg_impl.h"
 #include "oracle_core/snapshot_files.h"
+#include "oracle_core/oracle_interfaces_def.h"
 #include "contract_core/qpi_oracle_impl.h"
 
 #include "contract_core/qpi_mining_impl.h"
@@ -275,6 +277,8 @@ static volatile char solutionsLock = 0;
 static unsigned long long* minerSolutionFlags = NULL;
 static volatile m256i minerPublicKeys[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int minerScores[MAX_NUMBER_OF_MINERS + 1];
+static volatile m256i minerPublicKeysRollback[MAX_NUMBER_OF_MINERS + 1];
+static volatile unsigned int minerScoresRollback[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int numberOfMiners = NUMBER_OF_COMPUTORS;
 static m256i competitorPublicKeys[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static unsigned int competitorScores[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
@@ -295,6 +299,8 @@ static constexpr unsigned int gScoreMultiplier[score_engine::AlgoType::MaxAlgoCo
 // Custom mining related variables and constants
 static unsigned int gCustomMiningSharesCount[NUMBER_OF_COMPUTORS] = { 0 };
 static CustomMiningSharesCounter gCustomMiningSharesCounter;
+
+static CustomQubicMiningStorage customQubicMiningStorage;
 
 #if TICK_STORAGE_AUTOSAVE_MODE
 static unsigned int nextPersistingNodeStateTick = 0;
@@ -828,14 +834,9 @@ static void processBroadcastMessage(const unsigned long long processorNumber, Re
                                         {
                                             unsigned int solutionScore = (*score)(processorNumber, request->destinationPublicKey, solution_miningSeed, solution_nonce);
                                             score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(solution_nonce.m256i_u8);
-                                            int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+                                            const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
                                                 solutionThreshold[system.epoch][selectedAlgo]
                                                 : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
-                                            if (selectedAlgo == score_engine::AlgoType::Addition
-                                                && system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
-                                            {
-                                                threshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
-                                            }
                                             if (system.numberOfSolutions < MAX_NUMBER_OF_SOLUTIONS
                                                 && score->isValidScore(solutionScore, selectedAlgo)
                                                 && score->isGoodScore(solutionScore, threshold, selectedAlgo))
@@ -1570,10 +1571,6 @@ static void processRequestSystemInfo(Peer* peer, RequestResponseHeader* header)
     respondedSystemInfo.randomMiningSeed = score->currentRandomSeed;
     respondedSystemInfo.solutionThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::HyperIdentity] : HYPERIDENTITY_SOLUTION_THRESHOLD_DEFAULT;
     respondedSystemInfo.solutionAdditionalThreshold = (system.epoch < MAX_NUMBER_EPOCH) ? solutionThreshold[system.epoch][score_engine::AlgoType::Addition] : ADDITION_SOLUTION_THRESHOLD_DEFAULT;
-    if (system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
-    {
-        respondedSystemInfo.solutionAdditionalThreshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
-    }
 
     respondedSystemInfo.totalSpectrumAmount = spectrumInfo.totalAmount;
     respondedSystemInfo.currentEntityBalanceDustThreshold = (dustThresholdBurnAll > dustThresholdBurnHalf) ? dustThresholdBurnAll : dustThresholdBurnHalf;
@@ -1675,7 +1672,7 @@ static void processBroadcastCustomMiningTask(RequestResponseHeader* header)
     if (!header->isDejavuZero())
         return;
     const unsigned int messageSize = header->size() - sizeof(RequestResponseHeader);
-    if (messageSize <= SIGNATURE_SIZE)
+    if (messageSize < sizeof(CustomQubicMiningTask) + SIGNATURE_SIZE)
         return;
     const unsigned char* payload = (const unsigned char*)header->getPayload<void>();
     m256i digest;
@@ -1683,6 +1680,9 @@ static void processBroadcastCustomMiningTask(RequestResponseHeader* header)
     if (verify(dogeDispatcherPubkey, digest.m256i_u8, payload + (messageSize - SIGNATURE_SIZE)))
     {
         enqueueResponse(NULL, header);
+#ifdef SEND_DOGE_ORACLE_QUERIES
+        customQubicMiningStorage.addTask(reinterpret_cast<const CustomQubicMiningTask*>(payload), messageSize - SIGNATURE_SIZE);
+#endif
     }
 }
 
@@ -1694,20 +1694,85 @@ static void processBroadcastCustomMiningSolution(RequestResponseHeader* header)
     if (!header->isDejavuZero())
         return;
     const unsigned int messageSize = header->size() - sizeof(RequestResponseHeader);
-    if (messageSize <= SIGNATURE_SIZE)
+    if (messageSize < sizeof(CustomQubicMiningSolution) + SIGNATURE_SIZE)
         return;
-    const unsigned char* payload = (const unsigned char*)header->getPayload<void>();
-    const m256i* sourcePublicKey = (const m256i*)payload;
+    const auto* payload = reinterpret_cast<const unsigned char*>(header->getPayload<void>());
 
     m256i digest;
     KangarooTwelve(payload, messageSize - SIGNATURE_SIZE, &digest, sizeof(digest));
+
+    const auto* sol = reinterpret_cast<const CustomQubicMiningSolution*>(payload);
+    const auto* sourcePublicKey = reinterpret_cast<const m256i*>(sol->sourcePublicKey);
     if (verify(sourcePublicKey->m256i_u8, digest.m256i_u8, payload + (messageSize - SIGNATURE_SIZE)))
     {
-        if (computorIndex(*sourcePublicKey) >= 0
-            || (::spectrumIndex(*sourcePublicKey) >= 0 && energy(::spectrumIndex(*sourcePublicKey)) >= MESSAGE_DISSEMINATION_THRESHOLD))
+        // Only relay and process if the sender is a computor or has enough balance to prevent spam.
+        if (computorIndex(*sourcePublicKey) < 0
+            && (::spectrumIndex(*sourcePublicKey) < 0 || energy(::spectrumIndex(*sourcePublicKey)) < MESSAGE_DISSEMINATION_THRESHOLD))
+            return;
+
+        // Broadcast the solution to peers.
+        enqueueResponse(NULL, header);
+
+#ifdef SEND_DOGE_ORACLE_QUERIES
+        if (sol->customMiningType == CustomMiningType::DOGE)
         {
-            enqueueResponse(NULL, header);
+            if (messageSize - SIGNATURE_SIZE < sizeof(CustomQubicMiningSolution) + sizeof(QubicDogeMiningSolution))
+                return;
+
+            const auto* dogeSol = reinterpret_cast<const QubicDogeMiningSolution*>(payload + sizeof(CustomQubicMiningSolution));
+            unsigned int compIdFromEN2 = 0;
+            // Comp id is encoded in first 4 bytes of extraNonce2 (big endian byte order).
+            for (int i = 0; i < 4; ++i)
+                compIdFromEN2 = (compIdFromEN2 << 8) | dogeSol->extraNonce2[i];
+            compIdFromEN2 %= NUMBER_OF_COMPUTORS;
+
+            // Check if the solution is from own comp pool -> if yes, query oracle.
+            for (unsigned int i = 0; i < computorSeedsCount; ++i)
+            {
+                if (computorIndex(computorPublicKeys[i]) == compIdFromEN2)
+                {
+                    // Check if the solution is added successfully (active task, no duplicate) before sending oracle query.
+                    CustomQubicMiningStorage::StoredDogeMiningTask task;
+                    if (customQubicMiningStorage.addSolution(sol, messageSize - SIGNATURE_SIZE, reinterpret_cast<unsigned char*>(&task)) < 0)
+                        return;
+
+                    if (isMainMode()) // only main node should send oracle queries
+                    {
+                        unsigned char buffer[sizeof(OracleUserQueryTransactionPrefix)
+                            + sizeof(OI::DogeShareValidation::OracleQuery) + SIGNATURE_SIZE];
+
+                        auto* tx = reinterpret_cast<OracleUserQueryTransactionPrefix*>(buffer);
+                        tx->sourcePublicKey = computorPublicKeys[i];
+                        tx->destinationPublicKey = m256i::zero();
+                        tx->amount = 0;
+                        tx->tick = system.tick + 8; // offset of 8 ticks to ensure propagation through the network
+                        tx->inputType = OracleUserQueryTransactionPrefix::transactionType();
+                        tx->inputSize = OracleUserQueryTransactionPrefix::minInputSize() + sizeof(OI::DogeShareValidation::OracleQuery);
+                        tx->oracleInterfaceIndex = OI::DogeShareValidation::oracleInterfaceIndex;
+                        tx->timeoutMilliseconds = 30000;
+                        unsigned char* queryData = buffer + sizeof(OracleUserQueryTransactionPrefix);
+                        // Full header can be constructed via concatenating version + prevHash + merkleRoot + miner's nTime + nBits + miner's nonce.
+                        unsigned int offset = 0;
+                        copyMem(queryData + offset, task.version, 4); offset += 4;
+                        copyMem(queryData + offset, task.prevHash, 32); offset += 32;
+                        copyMem(queryData + offset, dogeSol->merkleRoot, 32); offset += 32;
+                        copyMem(queryData + offset, dogeSol->nTime, 4); offset += 4;
+                        copyMem(queryData + offset, task.nBits, 4); offset += 4;
+                        copyMem(queryData + offset, dogeSol->nonce, 4); offset += 4;
+                        copyMem(queryData + offset, task.dispatcherTarget, 32); offset += 32;
+
+                        KangarooTwelve(buffer, sizeof(Transaction) + tx->inputSize, digest.m256i_u8, sizeof(digest));
+                        sign(computorSubseeds[i].m256i_u8, computorPublicKeys[i].m256i_u8, digest.m256i_u8, tx->signaturePtr());
+                        enqueueResponse(NULL, tx->totalSize(), BROADCAST_TRANSACTION, 0, tx);
+
+                        // TODO: resend oracle query if the tx isn't included in scheduled tick or if it is an empty tick
+                    }
+
+                    break;
+                }
+            }
         }
+#endif
     }
 }
 
@@ -2524,13 +2589,13 @@ static void requestProcessor(void* ProcedureArgument, unsigned long long process
                 }
                 break;
 
-                case BROADCAST_CUSTOM_MINING_TASK:
+                case CustomQubicMiningTask::type():
                 {
                     processBroadcastCustomMiningTask(header);
                 }
                 break;
 
-                case BROADCAST_CUSTOM_MINING_SOLUTION:
+                case CustomQubicMiningSolution::type():
                 {
                     processBroadcastCustomMiningSolution(header);
                 }
@@ -2920,14 +2985,9 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
     {
         minerSolutionFlags[flagIndex >> 6] |= (1ULL << (flagIndex & 63));
         score_engine::AlgoType selectedAlgo = score_engine::getAlgoType(transaction->nonce.m256i_u8);
-        int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
-             solutionThreshold[system.epoch][selectedAlgo]
-             : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
-        if (selectedAlgo == score_engine::AlgoType::Addition
-            && system.tick < ADDITION_SOLUTION_THRESHOLD_ACTIVATION_TICK)
-        {
-            threshold = ADDITION_SOLUTION_THRESHOLD_PRE_ACTIVATION;
-        }
+        const int threshold = (system.epoch < MAX_NUMBER_EPOCH) ?
+                solutionThreshold[system.epoch][selectedAlgo]
+                : score_engine::DEFAUL_SOLUTION_THRESHOLD[selectedAlgo];
 #ifdef TESTNET
         unsigned int solutionScore = (*::score)(processorNumber, transaction->sourcePublicKey, transaction->miningSeed, transaction->nonce);
 #else
@@ -3268,7 +3328,17 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
 
                 case OracleUserQueryTransactionPrefix::transactionType():
                 {
-                    const bool error = (oracleEngine.startUserQuery((OracleUserQueryTransactionPrefix*)transaction, transactionIndex) < 0);
+                    // check for special cases
+                    const auto* queryTx = (const OracleUserQueryTransactionPrefix*)transaction;
+                    bool forceZeroFee = false;
+                    if (queryTx->oracleInterfaceIndex == OI::DogeShareValidation::oracleInterfaceIndex)
+                    {
+                        // doge share validation query does not cost fees for computors
+                        forceZeroFee = computorIndex(queryTx->sourcePublicKey) >= 0;
+                    }
+
+                    // start user query
+                    const bool error = (oracleEngine.startUserQuery(queryTx, transactionIndex, forceZeroFee) < 0);
                     if (error && transaction->amount)
                     {
                         oracleEngine.refundFees(transaction->sourcePublicKey, transaction->amount);
@@ -3645,6 +3715,9 @@ static void processTick(unsigned long long processorNumber)
         // Setup spectrum rollback data
         setMem(spectrumDataRollback, sizeof(spectrumDataRollback), 0);
         resourceTestingDigestRollback = resourceTestingDigest;
+
+        copyMem((void*)minerPublicKeysRollback, (void*)minerPublicKeys, sizeof(minerPublicKeys));
+        copyMem((void*)minerScoresRollback, (void*)minerScores, sizeof(minerScores));
 
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
@@ -5709,6 +5782,10 @@ static bool isTickTimeOut()
 
 void reprocessSolutionTransaction(unsigned long long processorNumber)
 {
+    // first rollback the miner scores data
+    copyMem((void*)minerPublicKeys, (void*)minerPublicKeysRollback, sizeof(minerPublicKeysRollback));
+    copyMem((void*)minerScores, (void*)minerScoresRollback, sizeof(minerScoresRollback));
+
     auto tsCurrentTickTransactionOffsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(system.tick);
 
     unsigned long long solutionProcessStartTick = __rdtsc(); // for tracking the time processing solutions
@@ -7002,6 +7079,11 @@ static bool initialize()
             return false;
         }
 
+        if (!customQubicMiningStorage.init())
+        {
+            return false;
+        }
+
         if (!logger.initLogging())
         {
             return false;
@@ -7422,6 +7504,8 @@ static void deinitialize()
 #endif
 
     oracleEngine.deinit();
+
+    customQubicMiningStorage.deinit();
 
     deinitContractExec();
     for (unsigned int contractIndex = 0; contractIndex < contractCount; contractIndex++)
