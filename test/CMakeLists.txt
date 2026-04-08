@@ -43,6 +43,7 @@ add_executable(
    		contract_rl.cpp
    		contract_testex.cpp
    		custom_mining.cpp
+		custom_qubic_mining_storage.cpp
    		file_io.cpp
    		# fourq.cpp
    		kangaroo_twelve.cpp
