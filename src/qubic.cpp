@@ -5214,7 +5214,7 @@ static int findCurrentDigestsFromNextTickVotes(m256i &spectrumDigest, unsigned i
             appendNumber(message, totalUniqueCurrentSpectrumDigestCounter, false);
             appendText(message, L"/");
             appendNumber(message, uniqueCurrentSpectrumDigestCounters[mostPopularUniqueCurrentSpectrumDigestIndex], false);
-            logToConsole(message);
+            //logToConsole(message);
             return 2;
         }
 
