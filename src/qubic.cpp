@@ -993,9 +993,28 @@ static void processBroadcastTick(Peer* peer, RequestResponseHeader* header)
             }
             else
             {
-                // Copy the sent tick to the tick storage
-                copyMem(tsTick, &request->tick, sizeof(Tick));
-                peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
+                // HACK: force empty ticks 49124963-49124965 — remove after passing these ticks
+                bool isOk = true;
+                if (request->tick.tick == 49124963 || request->tick.tick == 49124964)
+                {
+                    if (!(isZero(request->tick.transactionDigest) && isZero(request->tick.expectedNextTickTransactionDigest)))
+                    {
+                        isOk = false;
+                    }
+                }
+                if (request->tick.tick == 49124965)
+                {
+                    if (!isZero(request->tick.transactionDigest))
+                    {
+                        isOk = false;
+                    }
+                }
+                if (isOk)
+                {
+                    // Copy the sent tick to the tick storage
+                    copyMem(tsTick, &request->tick, sizeof(Tick));
+                    peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
+                }
             }
 
             ts.ticks.releaseLock(request->tick.computorIndex);
@@ -6230,6 +6249,13 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                 }
             }
 #endif
+
+            // HACK: force empty ticks 49124963-49124965 — remove after passing these ticks
+            if (system.tick >= 49124962 && system.tick <= 49124964)
+            {
+                targetNextTickDataDigest = m256i::zero();
+                targetNextTickDataDigestIsKnown = true;
+            }
 
             ts.tickData.acquireLock();
             copyMem(&nextTickData, &ts.tickData[nextTickIndex], sizeof(TickData));
