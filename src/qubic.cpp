@@ -8710,7 +8710,10 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                             logToConsole(L"MISALIGNED STATE DETECTED");
                         } else
                         {
-                            logToConsole(L"REPROCESSING SOLUTIONS - STATE IS NOT FINALIZED YET");
+                            setText(message, L"REPROCESSING SOLUTIONS - STATE IS NOT FINALIZED YET | Solutions in queue: ");
+                            appendNumber(message, score->_nTask - score->_nFinished, TRUE);
+                            appendText(message, L".");
+                            logToConsole(message);
                         }
                         if (misalignedState == 2)
                         {
