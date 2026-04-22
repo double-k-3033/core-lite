@@ -135,6 +135,7 @@ static bool loadAllNodeStateFromFile = false;
 static volatile int shutDownNode = 0;
 static volatile char enableBadBoySpammer = 0;
 static volatile bool spammerWithRpc = false;
+static volatile bool isReprocessingSolutions = false;
 
 #include "extensions/cxxopts.h"
 #include "extensions/overload.h"
@@ -5507,6 +5508,8 @@ static bool isTickTimeOut()
 
 void reprocessSolutionTransaction(unsigned long long processorNumber)
 {
+    isReprocessingSolutions = true;
+
     TickData currentTickData;
     // copy system.tick data
     ts.tickData.acquireLock();
@@ -5616,6 +5619,7 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
         }
     }
     ts.tickData.releaseLock();
+    isReprocessingSolutions = false;
 }
 
 void checkAllContractLocksReleased()
@@ -8701,7 +8705,13 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                             // state persisting for at least a second -> also log to debug.log
                             misalignedState = 2;
                         }
-                        logToConsole(L"MISALIGNED STATE DETECTED");
+                        if (!isReprocessingSolutions)
+                        {
+                            logToConsole(L"MISALIGNED STATE DETECTED");
+                        } else
+                        {
+                            logToConsole(L"REPROCESSING SOLUTIONS - STATE IS NOT FINALIZED YET");
+                        }
                         if (misalignedState == 2)
                         {
                             // print health status and stop repeated logging to debug.log
