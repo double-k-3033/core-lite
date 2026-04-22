@@ -5554,12 +5554,14 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
     {
         // Process solutions in this tick and store in cache. In parallel, score->tryProcessSolution() is called by
         // request processors to speed up solution processing.
+        printf("started to process solution transactions in tick %u\n", system.tick);
         score->startProcessTaskQueue();
         while (!score->isTaskQueueProcessed())
         {
             score->tryProcessSolution(processorNumber);
         }
         score->stopProcessTaskQueue();
+        printf("finished processing solution transactions in tick %u\n", system.tick);
     }
 
     solutionTotalExecutionTicks = __rdtsc() - solutionProcessStartTick; // for tracking the time processing solutions
@@ -8154,7 +8156,7 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
             preprocessSolutionFlags[i] = false;
         }
 
-        for (unsigned int i = 0; i < numberOfAllProcessors && numberOfProcessors < MAX_NUMBER_OF_PROCESSORS_DYNAMIC; i++)
+        for (unsigned int i = 0; i < numberOfAllProcessors && numberOfProcessors < MAX_NUMBER_OF_PROCESSORS; i++)
         {
             EFI_PROCESSOR_INFORMATION processorInformation;
             mpServicesProtocol->GetProcessorInfo(mpServicesProtocol, i, &processorInformation);
@@ -8198,10 +8200,10 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                     createEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK, (void*)&shutdownCallback, NULL, &processors[numberOfProcessors].event);
                     mpServicesProtocol->StartupThisAP(mpServicesProtocol, Processor::runFunction, i, processors[numberOfProcessors].event, 0, &processors[numberOfProcessors], NULL);
 
-                    if (!solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC]
+                    if (!solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS]
                         && !solutionProcessorFlags[i])
                     {
-                        solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC] = true;
+                        solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS] = true;
                         solutionProcessorFlags[i] = true;
                         if (nSolutionProcessorIDs < NUMBER_OF_PREPROCESS_SOLUTION_PROCESSORS)
                         {
@@ -8823,7 +8825,7 @@ unsigned long long getTotalRam()
     }
 
     // processor buffers
-    totalRam += MAX_NUMBER_OF_PROCESSORS_DYNAMIC * (BUFFER_SIZE + STACK_SIZE);
+    totalRam += MAX_NUMBER_OF_PROCESSORS * (BUFFER_SIZE + STACK_SIZE);
 
     // tick storage
     totalRam += ts.getTickDataSize();
