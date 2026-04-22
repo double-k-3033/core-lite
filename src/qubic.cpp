@@ -135,6 +135,7 @@ static bool loadAllNodeStateFromFile = false;
 static volatile int shutDownNode = 0;
 static volatile char enableBadBoySpammer = 0;
 static volatile bool spammerWithRpc = false;
+static volatile bool isReprocessingSolutions = false;
 
 #include "extensions/cxxopts.h"
 #include "extensions/overload.h"
@@ -5507,6 +5508,14 @@ static bool isTickTimeOut()
 
 void reprocessSolutionTransaction(unsigned long long processorNumber)
 {
+    isReprocessingSolutions = true;
+
+    TickData currentTickData;
+    // copy system.tick data
+    ts.tickData.acquireLock();
+    copyMem(&currentTickData, ts.tickData.getByTickIfNotEmpty(system.tick), sizeof(TickData));
+    ts.tickData.releaseLock();
+
     // first rollback the miner scores data
     copyMem((void*)minerPublicKeys, (void*)minerPublicKeysRollback, sizeof(minerPublicKeysRollback));
     copyMem((void*)minerScores, (void*)minerScoresRollback, sizeof(minerScoresRollback));
@@ -5519,7 +5528,7 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
     // pre-scan any solution tx and add them to solution task queue
     for (unsigned int transactionIndex = 0; transactionIndex < NUMBER_OF_TRANSACTIONS_PER_TICK; transactionIndex++)
     {
-        if (!isZero(nextTickData.transactionDigests[transactionIndex]))
+        if (!isZero(currentTickData.transactionDigests[transactionIndex]))
         {
             if (tsCurrentTickTransactionOffsets[transactionIndex])
             {
@@ -5565,10 +5574,9 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
     solutionTotalExecutionTicks = __rdtsc() - solutionProcessStartTick; // for tracking the time processing solutions
 
     ts.tickData.acquireLock();
-    TickData *currentTickData = ts.tickData.getByTickIfNotEmpty(system.tick);
     for (unsigned int transactionIndex = 0; transactionIndex < NUMBER_OF_TRANSACTIONS_PER_TICK; transactionIndex++)
     {
-        if (!isZero(currentTickData->transactionDigests[transactionIndex]))
+        if (!isZero(currentTickData.transactionDigests[transactionIndex]))
         {
             if (tsCurrentTickTransactionOffsets[transactionIndex])
             {
@@ -5608,6 +5616,7 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
         }
     }
     ts.tickData.releaseLock();
+    isReprocessingSolutions = false;
 }
 
 void checkAllContractLocksReleased()
@@ -8154,7 +8163,7 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
             preprocessSolutionFlags[i] = false;
         }
 
-        for (unsigned int i = 0; i < numberOfAllProcessors && numberOfProcessors < MAX_NUMBER_OF_PROCESSORS_DYNAMIC; i++)
+        for (unsigned int i = 0; i < numberOfAllProcessors && numberOfProcessors < MAX_NUMBER_OF_PROCESSORS; i++)
         {
             EFI_PROCESSOR_INFORMATION processorInformation;
             mpServicesProtocol->GetProcessorInfo(mpServicesProtocol, i, &processorInformation);
@@ -8198,10 +8207,10 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                     createEvent(EVT_NOTIFY_SIGNAL, TPL_CALLBACK, (void*)&shutdownCallback, NULL, &processors[numberOfProcessors].event);
                     mpServicesProtocol->StartupThisAP(mpServicesProtocol, Processor::runFunction, i, processors[numberOfProcessors].event, 0, &processors[numberOfProcessors], NULL);
 
-                    if (!solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC]
+                    if (!solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS]
                         && !solutionProcessorFlags[i])
                     {
-                        solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS_DYNAMIC] = true;
+                        solutionProcessorFlags[i % NUMBER_OF_SOLUTION_PROCESSORS] = true;
                         solutionProcessorFlags[i] = true;
                         if (nSolutionProcessorIDs < NUMBER_OF_PREPROCESS_SOLUTION_PROCESSORS)
                         {
@@ -8693,7 +8702,16 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                             // state persisting for at least a second -> also log to debug.log
                             misalignedState = 2;
                         }
-                        logToConsole(L"MISALIGNED STATE DETECTED");
+                        if (!isReprocessingSolutions)
+                        {
+                            logToConsole(L"MISALIGNED STATE DETECTED");
+                        } else
+                        {
+                            setText(message, L"REPROCESSING SOLUTIONS - STATE IS NOT FINALIZED YET | Solutions in queue: ");
+                            appendNumber(message, score->_nTask - score->_nFinished, TRUE);
+                            appendText(message, L".");
+                            logToConsole(message);
+                        }
                         if (misalignedState == 2)
                         {
                             // print health status and stop repeated logging to debug.log
@@ -8823,7 +8841,7 @@ unsigned long long getTotalRam()
     }
 
     // processor buffers
-    totalRam += MAX_NUMBER_OF_PROCESSORS_DYNAMIC * (BUFFER_SIZE + STACK_SIZE);
+    totalRam += MAX_NUMBER_OF_PROCESSORS * (BUFFER_SIZE + STACK_SIZE);
 
     // tick storage
     totalRam += ts.getTickDataSize();
