@@ -5372,7 +5372,7 @@ static void updateVotesCount(unsigned int& tickNumberOfComputors, unsigned int& 
                 KangarooTwelve(saltedData, 32 + sizeof(resourceTestingDigest), &saltedDigest, sizeof(resourceTestingDigest));
                 // ignore verify saltedResourceTestingDigest on MAINNET
                 bool isSaltedResourceTestingDigestValid = true;
-                //isSaltedResourceTestingDigestValid = tick->saltedResourceTestingDigest == saltedDigest.m256i_u32[0];
+                isSaltedResourceTestingDigestValid = tick->saltedResourceTestingDigest == saltedDigest.m256i_u32[0];
                 if (isSaltedResourceTestingDigestValid)
                 {
                     saltedData[1] = etalonTick.saltedSpectrumDigest;
