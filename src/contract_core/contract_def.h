@@ -32,11 +32,7 @@
 #define CONTRACT_INDEX QUOTTERY_CONTRACT_INDEX
 #define CONTRACT_STATE_TYPE QUOTTERY
 #define CONTRACT_STATE2_TYPE QUOTTERY2
-#ifdef OLD_QTRY
-#include "contracts/Quottery_old.h"
-#else
 #include "contracts/Quottery.h"
-#endif
 
 #undef CONTRACT_INDEX
 #undef CONTRACT_STATE_TYPE
@@ -216,7 +212,11 @@
 #define CONTRACT_INDEX QRWA_CONTRACT_INDEX
 #define CONTRACT_STATE_TYPE QRWA
 #define CONTRACT_STATE2_TYPE QRWA2
+#ifdef OLD_QRWA
+#include "contracts/qRWA_old.h"
+#else
 #include "contracts/qRWA.h"
+#endif
 
 #undef CONTRACT_INDEX
 #undef CONTRACT_STATE_TYPE

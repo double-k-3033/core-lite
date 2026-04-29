@@ -371,6 +371,9 @@
     <ClInclude Include="contracts\qRWA.h">
       <Filter>contracts</Filter>
     </ClInclude>
+    <ClInclude Include="contracts\qRWA_old.h">
+      <Filter>contracts</Filter>
+    </ClInclude>
     <ClInclude Include="oracle_core\snapshot_files.h">
       <Filter>oracle_core</Filter>
     </ClInclude>
@@ -379,9 +382,6 @@
     </ClInclude>
     <ClInclude Include="mining\custom_qubic_mining_storage.h">
       <Filter>mining</Filter>
-    </ClInclude>
-    <ClInclude Include="contracts\Quottery_old.h">
-      <Filter>contracts</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

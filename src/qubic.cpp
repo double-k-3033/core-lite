@@ -37,7 +37,7 @@
 #define system qsystem
 #endif
 
-// #define OLD_QTRY
+// #define OLD_QRWA
 
 //#define INCLUDE_CONTRACT_TEST_EXAMPLES
 
@@ -1510,10 +1510,8 @@ static void processBroadcastCustomMiningTask(RequestResponseHeader* header)
     if (verify(dogeDispatcherPubkey, digest.m256i_u8, payload + (messageSize - SIGNATURE_SIZE)))
     {
         enqueueResponse(NULL, header);
-#if BASIC_DOGE_ORACLE_QUERIES
         customQubicMiningStorage.addTask(reinterpret_cast<const CustomQubicMiningTask*>(payload), messageSize - SIGNATURE_SIZE);
         ATOMIC_INC64(gDogeMiningStats.phaseV2.tasks);
-#endif
     }
 }
 
@@ -1544,7 +1542,6 @@ static void processBroadcastCustomMiningSolution(RequestResponseHeader* header)
         // Broadcast the solution to peers.
         enqueueResponse(NULL, header);
 
-#if BASIC_DOGE_ORACLE_QUERIES
         if (sol->customMiningType == CustomMiningType::DOGE)
         {
             if (messageSize - SIGNATURE_SIZE < sizeof(CustomQubicMiningSolution) + sizeof(QubicDogeMiningSolution))
@@ -1599,9 +1596,7 @@ static void processBroadcastCustomMiningSolution(RequestResponseHeader* header)
                     queryData->numMerkleBranches = task.numMerkleBranches;
                     copyMem(queryData->additionalData, task.additionalData, OI::DogeShareValidation::OracleQuery::additionalDataSize);
 
-#if RETRY_DOGE_ORACLE_QUERIES
-                    customQubicMiningStorage.addOracleQuery(tx);
-#endif
+                    customQubicMiningStorage.addOracleQuery(tx, task.jobId);
 
                     if (isMainMode()) // only main node should send oracle queries
                     {
@@ -1614,7 +1609,6 @@ static void processBroadcastCustomMiningSolution(RequestResponseHeader* header)
                 }
             }
         }
-#endif
     }
 }
 
@@ -2904,7 +2898,6 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
                     int64_t queryId = oracleEngine.startUserQuery(queryTx, transactionIndex, forceZeroFee);
                     const bool error = queryId < 0;
 
-#if RETRY_DOGE_ORACLE_QUERIES
                     if (queryTx->oracleInterfaceIndex == OI::DogeShareValidation::oracleInterfaceIndex)
                     {
                         if (error)
@@ -2917,7 +2910,6 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
                             customQubicMiningStorage.markOracleQueryStarted((const OracleUserQueryTransactionPrefix*)transaction, queryId);
                         }
                     }
-#endif
 
                     if (error && transaction->amount)
                     {
@@ -3379,12 +3371,20 @@ static void processTick(unsigned long long processorNumber)
         logToConsole(message);
     }
 
-#if RETRY_DOGE_ORACLE_QUERIES
-    // Resend oracle queries for share validation if they were scheduled for but not included in this tick.
+    // Resend own oracle queries for share validation if they were scheduled for but not included in this tick.
     int currentQueryIndex = customQubicMiningStorage.getNextScheduledQueryIndexForTick(CustomMiningType::DOGE, /*currentQueryIndex=*/-1, system.tick);
     while (currentQueryIndex >= 0)
     {
         CustomQubicMiningStorage::OracleQueryInfo queryInfo = customQubicMiningStorage.getOracleQueryInfo(CustomMiningType::DOGE, currentQueryIndex);
+
+        // Check if task is still active before rescheduling (revenue points can only be counted for active tasks).
+        if (!customQubicMiningStorage.containsTask(CustomMiningType::DOGE, queryInfo.taskId))
+        {
+            customQubicMiningStorage.removeOracleQuery(CustomMiningType::DOGE, currentQueryIndex);
+            currentQueryIndex = customQubicMiningStorage.getNextScheduledQueryIndexForTick(CustomMiningType::DOGE, currentQueryIndex, system.tick);
+            continue;
+        }
+
         for (unsigned int i = 0; i < computorSeedsCount; ++i)
         {
             if (computorPublicKeys[i] == queryInfo.sourcePublicKey)
@@ -3423,7 +3423,6 @@ static void processTick(unsigned long long processorNumber)
         }
         currentQueryIndex = customQubicMiningStorage.getNextScheduledQueryIndexForTick(CustomMiningType::DOGE, currentQueryIndex, system.tick);
     }
-#endif
 
     // Generate subscription queries (may create queries that immediately timeout if the network was stuck)
     oracleEngine.generateSubscriptionQueries();
@@ -3473,10 +3472,8 @@ static void processTick(unsigned long long processorNumber)
                 if (finishedUserQuery->status == ORACLE_QUERY_STATUS_SUCCESS
                     && oracleEngine.getOracleReply(finishedUserQuery->queryId, &reply, sizeof(reply)))
                 {
-#if RETRY_DOGE_ORACLE_QUERIES
                     // Oracle query was successful, remove from storage.
                     customQubicMiningStorage.removeOracleQuery(finishedUserQuery->interfaceIndex, finishedUserQuery->queryId);
-#endif
 
                     // Oracle reply is available
                     if (reply.isValid)
@@ -3509,7 +3506,6 @@ static void processTick(unsigned long long processorNumber)
                         ATOMIC_INC64(gDogeMiningStats.phaseV2.invalid);
                     }
                 }
-#if RETRY_DOGE_ORACLE_QUERIES
                 else
                 {
                     // Oracle query failed -> resend user query tx if it is from own comp pool
@@ -3541,7 +3537,6 @@ static void processTick(unsigned long long processorNumber)
                         }
                     }
                 }
-#endif
             }
         }
         finishedUserQuery = oracleEngine.getFinishedUserQuery();
