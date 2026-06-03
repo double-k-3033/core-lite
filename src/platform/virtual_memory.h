@@ -696,7 +696,11 @@ class SwapVirtualMemory : private VirtualMemory<T, prefixName, pageDirectory, pa
     using VMBase::loadPageToCache;
     using VMBase::getMostOutdatedCachePage;
 
+#if defined(TESTNET) && defined(TESTNET_LITE_RAM)
+    static constexpr unsigned long long MAX_PAGE = 128 * 1024; // 128K pages — LITE testnet
+#else
     static constexpr unsigned long long MAX_PAGE = 1024 * 1024; // max 1 million pages, can be adjusted later
+#endif
 
 private:
     bool* isPageWrittenToDisk; // if current page is written to disk

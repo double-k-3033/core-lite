@@ -12,14 +12,22 @@
 #define NUMBER_OF_EXCHANGED_PEERS 4
 
 #ifdef TESTNET
-#define SPECTRUM_DEPTH 24 // Defines SPECTRUM_CAPACITY (1 << SPECTRUM_DEPTH)
+  #ifdef TESTNET_LITE_RAM
+  #define SPECTRUM_DEPTH 18 // 256K entries (~16 MB) — LITE testnet
+  #else
+  #define SPECTRUM_DEPTH 24 // Defines SPECTRUM_CAPACITY (1 << SPECTRUM_DEPTH)
+  #endif
 #else
 #define SPECTRUM_DEPTH 24 // Defines SPECTRUM_CAPACITY (1 << SPECTRUM_DEPTH)
 #endif
 #define SPECTRUM_CAPACITY (1ULL << SPECTRUM_DEPTH) // Must be 2^N
 
 #ifdef TESTNET
-#define ASSETS_DEPTH 24 // Is derived from ASSETS_CAPACITY (=N)
+  #ifdef TESTNET_LITE_RAM
+  #define ASSETS_DEPTH 18 // 256K entries (~12 MB) — LITE testnet
+  #else
+  #define ASSETS_DEPTH 24 // Is derived from ASSETS_CAPACITY (=N)
+  #endif
 #else
 #define ASSETS_DEPTH 24 // Is derived from ASSETS_CAPACITY (=N)
 #endif

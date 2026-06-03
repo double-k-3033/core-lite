@@ -46,9 +46,15 @@ static const unsigned char oracleMachineIPs[][4] = {
 #endif
 
 // Virtual memory settings for logging
+#if defined(TESTNET) && defined(TESTNET_LITE_RAM)
+#define LOG_BUFFER_PAGE_SIZE (16000000ULL)   // 16 MB page — LITE testnet
+#define PMAP_LOG_PAGE_SIZE   (3000000ULL)    // 3 MB page — LITE testnet
+#define IMAP_LOG_PAGE_SIZE   500ULL          // 500 tick-blob entries/page — LITE testnet
+#else
 #define LOG_BUFFER_PAGE_SIZE (300000000ULL / 2)
 #define PMAP_LOG_PAGE_SIZE (30000000ULL / 2)
 #define IMAP_LOG_PAGE_SIZE 10000ULL
+#endif
 #define VM_NUM_CACHE_PAGE 4
 
 #if ENABLE_QUBIC_LOGGING_EVENT

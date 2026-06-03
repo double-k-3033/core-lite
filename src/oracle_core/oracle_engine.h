@@ -21,7 +21,11 @@
 void enqueueResponse(Peer* peer, unsigned int dataSize, unsigned char type, unsigned int dejavu, const void* data);
 
 // Maximum number of queries supported per epoch
+#if defined(TESTNET) && defined(TESTNET_LITE_RAM)
+constexpr uint32_t MAX_ORACLE_QUERIES = (1 << 16);
+#else
 constexpr uint32_t MAX_ORACLE_QUERIES = (1 << 21);
+#endif
 
 // Size of query storage (used for contract queries and subscriptions, not needed for user queries such as DOGE verification)
 constexpr uint64_t ORACLE_QUERY_STORAGE_SIZE = MAX_ORACLE_QUERIES * 256;

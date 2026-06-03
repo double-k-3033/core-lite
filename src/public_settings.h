@@ -25,10 +25,18 @@
 // Number of buffers available for executing contract functions in parallel; having more means reserving a bit more RAM (+1 = +32 MB)
 // and less waiting in request processors if there are more parallel contract function requests. The maximum value that may make sense
 // is MAX_NUMBER_OF_PROCESSORS - 1.
+#if defined(TESTNET) && defined(TESTNET_LITE_RAM)
+#define NUMBER_OF_CONTRACT_EXECUTION_BUFFERS 2
+#else
 #define NUMBER_OF_CONTRACT_EXECUTION_BUFFERS 10
+#endif
 
 #define USE_SCORE_CACHE 1
+#if defined(TESTNET) && defined(TESTNET_LITE_RAM)
+#define SCORE_CACHE_SIZE 256000
+#else
 #define SCORE_CACHE_SIZE 2000000 // the larger the better
+#endif
 #define SCORE_CACHE_COLLISION_RETRIES 20 // number of retries to find entry in cache in case of hash collision
 
 // Number of ticks from prior epoch that are kept after seamless epoch transition. These can be requested after transition.
@@ -38,7 +46,11 @@
 #define TARGET_TICK_DURATION 7000
 #define TRANSACTION_SPARSENESS 1
 // Number of ticks that are stored in the pending txs pool. This also defines how many ticks in advance a tx can be registered.
-#define PENDING_TXS_POOL_NUM_TICKS (32ULL) // 10 minutes
+  #ifdef TESTNET_LITE_RAM
+  #define PENDING_TXS_POOL_NUM_TICKS (32ULL)
+  #else
+  #define PENDING_TXS_POOL_NUM_TICKS (32ULL)
+  #endif
 #else
 // The tick duration used for timing and scheduling logic.
 #define TARGET_TICK_DURATION 1000

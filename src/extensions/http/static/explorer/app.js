@@ -171,6 +171,8 @@ document.addEventListener('DOMContentLoaded', route);
 // Backend exposes the live list via /query/v1/getContracts — we fetch it at
 // boot and replace this array. Fallback is here so the UI still labels things
 // correctly if the endpoint is unavailable for any reason.
+// contractDescriptions[0] is a sentinel ("") — index 0 is NOT a contract.
+// Valid contract indices: 1..KNOWN_CONTRACTS.length - 1.
 let KNOWN_CONTRACTS = [
   '', 'QX', 'QTRY', 'RANDOM', 'QUTIL', 'MLM',
   'GQMPROP', 'SWATCH', 'CCF', 'QEARN', 'QVAULT',
@@ -185,7 +187,7 @@ async function loadContractList() {
   try {
     const r = await fetch('/query/v1/getContracts').then(r => r.json());
     if (r && Array.isArray(r.contracts)) {
-      KNOWN_CONTRACTS_META = r.contracts;
+      KNOWN_CONTRACTS_META = r.contracts.filter(c => c.index >= 1);
       const arr = [];
       for (const c of r.contracts) arr[c.index] = c.name || '';
       KNOWN_CONTRACTS = arr;
@@ -194,23 +196,37 @@ async function loadContractList() {
 }
 loadContractList(); // fire-and-forget at module load
 
+// Upper bound on valid contract indices. Live count when meta is loaded,
+// fallback table length otherwise. Always >= 1 so the check never matches idx=0.
+function maxContractIdx() {
+  return Math.max(KNOWN_CONTRACTS.length, 1);
+}
+
+// True iff idx names an actual smart contract (1..max-1). idx=0 is the null/burn
+// address, not a contract — callers must use this gate, not just the all-A chunk
+// shape, before labeling an identity as a contract.
+function isValidContractIdx(idx) {
+  return Number.isFinite(idx) && idx >= 1 && idx < maxContractIdx();
+}
+
 // Pretty contract label by index. Falls back to "#N" when unknown.
+// Returns '' for idx=0 — it is never a contract.
 function contractLabel(idx) {
-  if (idx == null) return '';
+  if (!isValidContractIdx(idx)) return '';
   const name = KNOWN_CONTRACTS[idx];
-  if (name === undefined) return '#' + idx;
-  if (name === '')        return 'NATIVE #0';
-  return name;
+  return (name === undefined || name === '') ? ('#' + idx) : name;
 }
 
 // Identity encoding (four_q.h:1825): four 8-byte chunks → 14 chars each
-// (char = byte % 26 + 'A'). Contract pubkeys are m256i(idx, 0, 0, 0), so
-// chunks 1-3 are zero → identity chars 14..55 are all 'A'. Checksum at 56..59.
+// (char = byte % 26 + 'A'). Contract pubkeys are m256i(idx, 0, 0, 0) with
+// idx >= 1, so chunks 1-3 are zero → identity chars 14..55 are all 'A',
+// AND chunk-0 decodes to a valid contract index. The all-zero pubkey
+// (60 'A's) is the null/burn address, not a contract, so reject idx=0.
 function destLooksLikeContract(idStr) {
   if (!idStr || idStr.length !== 60) return false;
   const s = idStr.toUpperCase();
   for (let i = 14; i < 56; i++) if (s[i] !== 'A') return false;
-  return true;
+  return isValidContractIdx(contractIdxFromId(s));
 }
 
 // Decode chunk-0 (first 14 chars) of a contract identity back to its index.
@@ -515,8 +531,13 @@ async function renderTx(hash, tick = null) {
 
   $view().innerHTML = `
     <section class="tx-header">
-      <div class="muted" style="font-size:0.7em;letter-spacing:0.25em;margin-bottom:0.5em">TX HASH</div>
-      <div class="tx-hash id">${fmt.esc(tx.hash || hash)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1em">
+        <div style="flex:1;min-width:0">
+          <div class="muted" style="font-size:0.7em;letter-spacing:0.25em;margin-bottom:0.5em">TX HASH</div>
+          <div class="tx-hash id">${fmt.esc(tx.hash || hash)}</div>
+        </div>
+        ${tx.hash ? `<button class="logs-btn" onclick="window.__showTxLogs('${fmt.esc(tx.hash)}', ${tx.tickNumber ?? 'null'})">◈ LOGS</button>` : ''}
+      </div>
     </section>
 
     <div class="tx-flow">
@@ -786,7 +807,7 @@ async function renderContracts(page = 0) {
 }
 
 async function renderContract(idx) {
-  if (!Number.isFinite(idx)) { $view().innerHTML = '<div class="empty-state">invalid contract index</div>'; return; }
+  if (!isValidContractIdx(idx)) { $view().innerHTML = `<div class="empty-state">invalid contract index · ${fmt.esc(String(idx))}</div>`; return; }
   const label = contractLabel(idx);
   const meta = KNOWN_CONTRACTS_META.find(c => c.index === idx);
   $view().innerHTML = `<p class="muted">› fetching ${fmt.esc(label)} calls…</p>`;
@@ -993,19 +1014,29 @@ function logPayloadPreview(e) {
     } catch (e) {}
     return `<span class="muted">value</span> <span style="color:var(--cyan)">${fmt.esc(val)}</span><span class="muted">${fmt.esc(tag)}</span>`;
   }
-  if (e.assetTransfer) {
-    const a = e.assetTransfer;
-    return `<span class="muted">asset</span> ${fmt.esc(a.assetName || '')} ${fmt.idLink(a.source)} → ${fmt.idLink(a.destination)}`;
+  if (e.assetOwnershipChange || e.assetPossessionChange) {
+    const a = e.assetOwnershipChange || e.assetPossessionChange;
+    const kind = e.assetOwnershipChange ? 'ownership' : 'possession';
+    return `<span class="muted">asset ${kind}</span> ${fmt.esc(a.assetName || '')} ×${fmt.n(a.numberOfShares)} ${fmt.idLink(a.source)} → ${fmt.idLink(a.destination)} <span class="muted">(issuer ${fmt.idLink(a.assetIssuer)})</span>`;
+  }
+  if (e.assetOwnershipManagingContractChange || e.assetPossessionManagingContractChange) {
+    const a = e.assetOwnershipManagingContractChange || e.assetPossessionManagingContractChange;
+    const kind = e.assetOwnershipManagingContractChange ? 'ownership' : 'possession';
+    const who = a.possessor ? fmt.idLink(a.possessor) : fmt.idLink(a.owner);
+    return `<span class="muted">${kind} mgr</span> ${fmt.esc(a.assetName || '')} ×${fmt.n(a.numberOfShares)} ${who} contract #${a.sourceContractIndex} → #${a.destinationContractIndex}`;
   }
   if (e.assetIssuance) {
-    return `<span class="muted">issue</span> ${fmt.esc(e.assetIssuance.assetName || '')}`;
+    return `<span class="muted">issue</span> ${fmt.esc(e.assetIssuance.assetName || '')} ×${fmt.n(e.assetIssuance.numberOfShares)} (issuer ${fmt.idLink(e.assetIssuance.assetIssuer)})`;
   }
-  if (e.contractErrorMessage || e.contractWarningMessage || e.contractInfoMessage || e.contractDebugMessage) {
-    const m = e.contractErrorMessage || e.contractWarningMessage || e.contractInfoMessage || e.contractDebugMessage;
-    return `<span class="muted">contract #${m.contractIndex ?? '?'}</span> code <span style="color:var(--orange)">${m.messageType ?? '?'}</span>`;
+  if (e.smartContractMessage) {
+    const m = e.smartContractMessage;
+    const lt = Number(e.logType);
+    const sev = lt === 4 ? 'error' : lt === 5 ? 'warning' : lt === 6 ? 'info' : lt === 7 ? 'debug' : 'msg';
+    const tone = lt === 4 ? 'var(--red)' : lt === 5 ? 'var(--orange)' : 'var(--cyan)';
+    return `<span style="color:${tone}">${sev}</span> contract #${m.contractIndex ?? '?'} type <span style="color:var(--orange)">${m.contractMessageType ?? '?'}</span>`;
   }
   if (e.burning) {
-    return `<span style="color:var(--red)">burn</span> ${fmt.n(e.burning.amount)} from ${fmt.idLink(e.burning.sourcePublicKey)}`;
+    return `<span style="color:var(--red)">burn</span> ${fmt.n(e.burning.amount)} from ${fmt.idLink(e.burning.source)} (contract #${e.burning.contractIndex ?? '?'})`;
   }
   if (e.contractReserveDeduction) {
     const d = e.contractReserveDeduction;
@@ -1013,7 +1044,7 @@ function logPayloadPreview(e) {
   }
   if (e.oracleQueryStatusChange) {
     const o = e.oracleQueryStatusChange;
-    return `<span class="muted">oracle</span> q ${fmt.n(o.queryId)} status ${o.queryStatus} type ${o.queryType}`;
+    return `<span class="muted">oracle</span> q ${fmt.n(o.queryId)} status ${o.queryStatus} type ${o.queryType} <span class="muted">from ${fmt.idLink(o.queryingEntity)}</span>`;
   }
   if (e.oracleSubscriberLogMessage) {
     const o = e.oracleSubscriberLogMessage;

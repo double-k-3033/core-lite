@@ -1,4 +1,5 @@
 #pragma once
+// #define LOGGING_PROBE  // uncomment to trace _commit() / updateTick() for gap diagnosis
 #include "platform/m256.h"
 #include "platform/concurrency.h"
 #include "platform/time.h"
@@ -617,12 +618,34 @@ public:
             // commit the tmp blob info and logBuffer to the VM
             unsigned long long currentDeletedLogs = 0;
             unsigned long long totalBytesOfLogsDeleted = 0;
+#ifdef LOGGING_PROBE
+            unsigned long long probeStartLogId = currentTickStartLogId;
+            unsigned long long probeEndLogId = logId;
+            unsigned long long probeBlobTmpSize = blobInfoTmp.size();
+            unsigned long long probeMapSizeBefore = mapLogIdToBufferIndex.size();
+#endif
             for (unsigned long long i = currentTickStartLogId; i < logId; i++)
             {
                 auto it = blobInfoTmp.find(i);
                 if (it == blobInfoTmp.end())
                 {
                     // this log id is deleted
+#ifdef LOGGING_PROBE
+                    {
+                        CHAR16 dbg[256];
+                        setText(dbg, L"[LOGPROBE] ORPHAN logId=");
+                        appendNumber(dbg, i, FALSE);
+                        appendText(dbg, L" tick=");
+                        appendNumber(dbg, currentTick, FALSE);
+                        appendText(dbg, L" txId=");
+                        appendNumber(dbg, currentTxId, FALSE);
+                        appendText(dbg, L" startLogId=");
+                        appendNumber(dbg, currentTickStartLogId, FALSE);
+                        appendText(dbg, L" logIdNow=");
+                        appendNumber(dbg, logId, FALSE);
+                        logToConsole(dbg);
+                    }
+#endif
                     currentDeletedLogs++;
                     unsigned long long deletedBytes = tmpLogSize[i];
                     totalBytesOfLogsDeleted += deletedBytes;
@@ -659,6 +682,28 @@ public:
             logBufferTail -= totalBytesOfLogsDeleted;
 
             mapTxToLogId.append(currentTickTxToId);
+#ifdef LOGGING_PROBE
+            {
+                CHAR16 dbg[256];
+                setText(dbg, L"[LOGPROBE] COMMIT tick=");
+                appendNumber(dbg, currentTick, FALSE);
+                appendText(dbg, L" startLogId=");
+                appendNumber(dbg, probeStartLogId, FALSE);
+                appendText(dbg, L" endLogId=");
+                appendNumber(dbg, probeEndLogId, FALSE);
+                appendText(dbg, L" deleted=");
+                appendNumber(dbg, currentDeletedLogs, FALSE);
+                appendText(dbg, L" tmpSize=");
+                appendNumber(dbg, probeBlobTmpSize, FALSE);
+                appendText(dbg, L" mapBefore=");
+                appendNumber(dbg, probeMapSizeBefore, FALSE);
+                appendText(dbg, L" mapAfter=");
+                appendNumber(dbg, mapLogIdToBufferIndex.size(), FALSE);
+                appendText(dbg, L" logIdAfter=");
+                appendNumber(dbg, logId, FALSE);
+                logToConsole(dbg);
+            }
+#endif
         }
 
         static void commitAndCleanCurrentTxToLogId()
@@ -726,6 +771,22 @@ public:
     static void updateTick(unsigned int _tick)
     {
 #if ENABLED_LOGGING
+#ifdef LOGGING_PROBE
+        {
+            CHAR16 dbg[256];
+            setText(dbg, L"[LOGPROBE] updateTick called tick=");
+            appendNumber(dbg, _tick, FALSE);
+            appendText(dbg, L" lastUpdated=");
+            appendNumber(dbg, lastUpdatedTick, FALSE);
+            appendText(dbg, L" tickBegin=");
+            appendNumber(dbg, tickBegin, FALSE);
+            appendText(dbg, L" currentTick=");
+            appendNumber(dbg, currentTick, FALSE);
+            appendText(dbg, L" currentTxId=");
+            appendNumber(dbg, currentTxId, FALSE);
+            logToConsole(dbg);
+        }
+#endif
         ASSERT((_tick == lastUpdatedTick + 1) || (_tick == tickBegin));
         ASSERT(_tick >= tickBegin);
 #if LOG_STATE_DIGEST

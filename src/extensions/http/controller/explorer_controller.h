@@ -14,6 +14,9 @@ class ExplorerController : public HttpController<ExplorerController>
 public:
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(ExplorerController::page, "/explorer",            Get);
+    // Browsers append a trailing slash for SPA URLs (`/explorer/#/tx/<hash>`),
+    // so the bare `/explorer/` must also resolve to the same HTML.
+    ADD_METHOD_TO(ExplorerController::page, "/explorer/",           Get);
     ADD_METHOD_TO(ExplorerController::css,  "/explorer/style.css",  Get);
     ADD_METHOD_TO(ExplorerController::js,   "/explorer/app.js",     Get);
     ADD_METHOD_TO(ExplorerController::data, "/explorer/data",       Get);

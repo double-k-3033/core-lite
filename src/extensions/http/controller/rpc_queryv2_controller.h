@@ -676,6 +676,17 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
         const unsigned int page = (*json).get("page", 0).asUInt();
         const unsigned int pageSize = std::min((unsigned int)200, (*json).get("pageSize", 50).asUInt());
 
+        // contract indices: 1..contractCount-1. idx 0 is the null/burn sentinel.
+        if (hasFilter && (filterIdx < 1 || filterIdx >= contractCount))
+        {
+            result["code"] = StatusCode::BadRequest;
+            result["message"] = "contractIndex out of range";
+            auto res = HttpResponse::newHttpJsonResponse(result);
+            res->setStatusCode(k400BadRequest);
+            cb(res);
+            return;
+        }
+
         if (toTick > system.tick) toTick = system.tick;
         if (fromTick < system.initialTick) fromTick = system.initialTick;
         if (fromTick > toTick) {
@@ -716,9 +727,12 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
                 if (isZero(localTickData.transactionDigests[i]) || !offsets[i]) continue;
                 Transaction *txPtr = ts.tickTransactions(offsets[i]);
                 const m256i &dest = txPtr->destinationPublicKey;
-                // contract pubkey: upper 3 chunks all zero
+                // contract pubkey: upper 3 chunks zero AND chunk-0 in [1, contractCount).
+                // (idx=0 / chunk-0 zero is the null/burn pubkey, not a contract.)
                 if (dest.m256i_u64[1] != 0 || dest.m256i_u64[2] != 0 || dest.m256i_u64[3] != 0) continue;
-                const unsigned int idx = (unsigned int)dest.m256i_u64[0];
+                const unsigned long long idx64 = dest.m256i_u64[0];
+                if (idx64 < 1 || idx64 >= contractCount) continue;
+                const unsigned int idx = (unsigned int)idx64;
                 if (hasFilter && idx != filterIdx) continue;
                 const unsigned int sz = txPtr->totalSize();
                 Hit h{ std::vector<unsigned char>(sz), idx };
@@ -839,7 +853,8 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
     {
         Json::Value result;
         Json::Value arr(Json::arrayValue);
-        for (unsigned int i = 0; i < contractCount; i++)
+        // contractDescriptions[0] is the empty sentinel — skip it.
+        for (unsigned int i = 1; i < contractCount; i++)
         {
             const auto &cd = contractDescriptions[i];
             char name[8] = {0};
@@ -853,7 +868,7 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
             arr.append(c);
         }
         result["contracts"] = arr;
-        result["count"] = contractCount;
+        result["count"] = contractCount - 1;
         cb(HttpResponse::newHttpJsonResponse(result));
     }
 
@@ -1411,10 +1426,8 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
         {
             Json::Value result;
             auto json = req->getJsonObject();
-            // Reject non-empty bodies that fail to parse, matching the convention used by
-            // the other RpcQueryV2 endpoints. An empty body would have body().empty() true
-            // — drogon also returns nullopt for getJsonObject() in that case, so we
-            // distinguish by checking req->body().
+            // drogon returns nullopt for both empty body and parse failure; distinguish
+            // via req->body() so empty body is accepted and bad JSON returns 400.
             if (!json && !req->body().empty())
             {
                 result["code"] = StatusCode::BadRequest;
@@ -1678,12 +1691,9 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
                 catch (...) { emitEmpty(); return; }
             }
 
-            // Walk logBuffer sequentially. Each committed event is [26-byte header]
-            // [payload of msgSize bytes] laid out contiguously; we can iterate by
-            // adding header_size + msgSize each step. The headers carry tick + logId
-            // so we can apply cheap pre-filters (tickNumber/logType/logId) before
-            // reading the payload, then resolve (tick, txId) by searching the per-tick
-            // fromLogId/length ranges in qLogger::mapTxToLogId for the embedded logId.
+            // Iterate by logId, not by raw byte offset: mapLogIdToBufferIndex can
+            // contain slots that don't pass verifyLog. getBlobInfo returns {-1,-1}
+            // for those so they are skipped cleanly.
             unsigned long long totalMatched = 0;
             const unsigned long long pageEndExclusive = (unsigned long long)offset + (unsigned long long)size;
             std::vector<Json::Value> page;
@@ -1691,47 +1701,39 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
             // desc: keep a rolling tail of the newest pageEndExclusive matches (asc order).
             std::deque<Json::Value> dtail;
 
-            const unsigned long long bufSize = qLogger::logBuffer.size();
             // Per-tick caches so we only fetch each tick's data once.
             unsigned int cachedTick = (unsigned int)-1;
             TickData cachedTickData;
             qLogger::TickBlobInfo cachedTbi;
             std::vector<std::string> cachedTxHashes;
 
-            // Seek to logIdLo's byte offset via the logId->offset map; fall back to 0 on miss.
-            unsigned long long offsetBytes = 0;
-            if (logIdLo > 0)
-            {
-                qLogger::BlobInfo bi = qLogger::logBuf.getBlobInfo(logIdLo);
-                if (bi.startIndex >= 0) offsetBytes = (unsigned long long)bi.startIndex;
-            }
             bool stopAll = false;
-            while (offsetBytes + LOG_HEADER_SIZE <= bufSize && !stopAll)
+            for (unsigned long long lid = logIdLo; lid <= logIdHi && !stopAll; lid++)
             {
-                char hdr[LOG_HEADER_SIZE];
-                qLogger::logBuffer.getMany(hdr, offsetBytes, LOG_HEADER_SIZE);
-                const unsigned char *hp = reinterpret_cast<const unsigned char *>(hdr);
+                qLogger::BlobInfo bi = qLogger::logBuf.getBlobInfo(lid);
+                if (bi.startIndex < 0 || bi.length <= 0) continue; // gap from compaction
+                unsigned long long entryLen = (unsigned long long)bi.length;
+                if (entryLen < LOG_HEADER_SIZE) continue; // sanity
+                // Hard cap to header + max 24-bit payload. A corrupt BlobInfo.length would
+                // otherwise blow the std::vector allocation below and crash the request handler.
+                static constexpr unsigned long long kMaxEntryLen = LOG_HEADER_SIZE + (1ULL << 24);
+                if (entryLen > kMaxEntryLen) continue;
+
+                std::vector<unsigned char> blob(entryLen);
+                qLogger::logBuffer.getMany(reinterpret_cast<char *>(blob.data()),
+                                           bi.startIndex, entryLen);
+                const unsigned char *hp = blob.data();
                 unsigned int headerEpoch = readUnaligned<unsigned short>(hp, 0);
                 unsigned int headerTick = readUnaligned<unsigned int>(hp, 2);
                 unsigned int sizeAndType = readUnaligned<unsigned int>(hp, 6);
                 unsigned long long headerLogId = readUnaligned<unsigned long long>(hp, 10);
                 unsigned int payloadSize = sizeAndType & 0xFFFFFF;
                 unsigned char logType = (unsigned char)(sizeAndType >> 24);
-                unsigned long long entryLen = (unsigned long long)LOG_HEADER_SIZE + payloadSize;
-                if (offsetBytes + entryLen > bufSize) break; // truncated last entry, stop safely
+                if ((unsigned long long)LOG_HEADER_SIZE + payloadSize > entryLen) continue;
 
-                // logBuffer is ordered by logId (and tick): once past the window, we are done.
-                if (headerLogId > logIdHi || headerTick > tickHi) break;
-
-                // Cheap pre-filters (skip read of payload if possible).
-                bool inTickWindow = headerTick >= tickLo && headerTick <= tickHi;
-                bool logTypeOk = !haveLogTypeFilter || logType == wantedLogType;
-                bool logIdOk = headerLogId >= logIdLo && headerLogId <= logIdHi;
-                if (!inTickWindow || !logTypeOk || !logIdOk)
-                {
-                    offsetBytes += entryLen;
-                    continue;
-                }
+                // Cheap pre-filters.
+                if (headerTick < tickLo || headerTick > tickHi) continue;
+                if (haveLogTypeFilter && logType != wantedLogType) continue;
 
                 // Refresh per-tick caches when tick changes.
                 if (headerTick != cachedTick)
@@ -1790,34 +1792,22 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
                 {
                     categories.append((int)(eventTxId - NUMBER_OF_TRANSACTIONS_PER_TICK + 1));
                 }
-                // eventTxId == -1 means the event couldn't be mapped to a tx; we still
-                // emit it with empty hash and empty categories (matches spec semantics
-                // for unattributed log entries — e.g. when mapTxToLogId is sparse).
 
                 if (useHashAnchor && (headerTick != hashAnchorTick || eventTxId != (int)hashAnchorTxId))
                 {
-                    offsetBytes += entryLen;
                     continue;
                 }
 
-                // Read the payload only now that this event has passed the cheap filters.
-                std::vector<unsigned char> blob(entryLen);
-                qLogger::logBuffer.getMany(reinterpret_cast<char *>(blob.data()),
-                                           offsetBytes, entryLen);
                 const unsigned char *payload = blob.data() + LOG_HEADER_SIZE;
-
                 if (!eventMatchesFilters(logType, headerEpoch, headerTick, headerLogId,
                                          txHashForEvent, categories,
                                          payload, payloadSize,
                                          cachedTickData,
                                          filters, exclude, should, ranges))
                 {
-                    offsetBytes += entryLen;
                     continue;
                 }
 
-                // Build JSON only for entries we might return: the asc page window, or
-                // (desc) every match — capped to the rolling tail below.
                 bool wantBuild = descOrder
                     || (totalMatched >= (unsigned long long)offset && totalMatched < pageEndExclusive);
                 if (wantBuild)
@@ -1836,10 +1826,7 @@ class RpcQueryV2Controller : public HttpController<RpcQueryV2Controller>
                     }
                 }
                 totalMatched++;
-                // asc can stop once the window is filled past the 10k cap; desc must reach
-                // the buffer end since the newest matches live at the tail.
                 if (!descOrder && totalMatched >= 10000 && totalMatched >= pageEndExclusive) stopAll = true;
-                offsetBytes += entryLen;
             }
 
             unsigned long long capped = std::min<unsigned long long>(totalMatched, 10000ULL);
