@@ -297,6 +297,20 @@ public:
                 }
             }
 
+            if (!buildPriorityIndex)
+            {
+                if (numSavedTxsPerTick[tickIndex] < maxNumTxsPerTick)
+                {
+                    copyMem(getDigestPtr(tickIndex, numSavedTxsPerTick[tickIndex]), &digest, sizeof(m256i));
+                    copyMem(getTxPtr(tickIndex, numSavedTxsPerTick[tickIndex]), tx, transactionSize);
+
+                    numSavedTxsPerTick[tickIndex]++;
+                    txAdded = true;
+                }
+
+                goto end_add_function;
+            }
+
             sint64 priority = calculateTxPriority(tx);
             if (priority > 0)
             {
