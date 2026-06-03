@@ -265,15 +265,23 @@ public:
 //        addDebugMessage(L"Begin pendingTxsPool.add()");
 //#endif
         bool txAdded = false;
+
+        // checkValidity + digest depend only on tx; compute before the lock to shrink the critical section.
+        const bool valid = tx->checkValidity();
+        unsigned int transactionSize = 0;
+        m256i digest;
+        if (valid)
+        {
+            transactionSize = tx->totalSize();
+            KangarooTwelve(tx, transactionSize, &digest, sizeof(m256i));
+        }
+
         ACQUIRE(lock);
-        if (tx->checkValidity() && tickInStorage(tx->tick))
+        if (valid && tickInStorage(tx->tick))
         {
             unsigned int tickIndex = tickToIndex(tx->tick);
-            const unsigned int transactionSize = tx->totalSize();
 
             // check if tx with same digest already exists
-            m256i digest;
-            KangarooTwelve(tx, transactionSize, &digest, sizeof(m256i));
             for (unsigned int txIndex = 0; txIndex < numSavedTxsPerTick[tickIndex]; ++txIndex)
             {
                 if (*getDigestPtr(tickIndex, txIndex) == digest)

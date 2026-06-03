@@ -20,7 +20,7 @@
 
 namespace opt_future_tick_prefetch {
 
-constexpr unsigned int CATCHUP_MAX_PREFETCH = 20;
+constexpr unsigned int CATCHUP_MAX_PREFETCH = 5;
 
 // Returns the highest tick number any connected peer has reported via
 // votes/tickData (i.e. an estimate of the network tip).
@@ -107,10 +107,24 @@ static void requestFutureTickTransactions(unsigned int prefetchDepth)
         if (!ts.tickInCurrentEpochStorage(futureTick)) break;
         if (ts.tickData[futureTick - system.initialTick].epoch == system.epoch)
         {
+            // Request only txs not yet stored (offset==0); requesting all re-sends the whole tick each round.
+            const TickData& td = ts.tickData[futureTick - system.initialTick];
+            const unsigned long long* offsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(futureTick);
+            setMem(requestedTickTransactions.requestedTickTransactions.transactionFlags,
+                   sizeof(requestedTickTransactions.requestedTickTransactions.transactionFlags), 0xff);
+            bool anyMissing = false;
+            for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
+            {
+                if (!offsets[i] && !isZero(td.transactionDigests[i]))
+                {
+                    requestedTickTransactions.requestedTickTransactions.transactionFlags[i >> 3] &= ~(1 << (i & 7));
+                    anyMissing = true;
+                }
+            }
+            if (!anyMissing)
+                continue;
             requestedTickTransactions.header.randomizeDejavu();
             requestedTickTransactions.requestedTickTransactions.tick = futureTick;
-            setMem(requestedTickTransactions.requestedTickTransactions.transactionFlags,
-                   sizeof(requestedTickTransactions.requestedTickTransactions.transactionFlags), 0);
             pushPreferringAtOrAbove(&requestedTickTransactions.header, futureTick);
         }
     }
