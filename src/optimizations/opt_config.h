@@ -18,7 +18,7 @@
 // future ticks while the ticker is still busy with earlier ticks.
 // (opt_eager_tx_fetch.h)
 #ifndef USE_EAGER_TX_FETCH
-#define USE_EAGER_TX_FETCH 1
+#define USE_EAGER_TX_FETCH 0
 #endif
 
 // Future-tick prefetch: when behind the network, requests tickData / votes /
@@ -27,5 +27,5 @@
 // catch-up pipeline many ticks worth of data instead of stalling per tick.
 // (opt_future_tick_prefetch.h)
 #ifndef USE_FUTURE_TICK_PREFETCH
-#define USE_FUTURE_TICK_PREFETCH 1
+#define USE_FUTURE_TICK_PREFETCH 0
 #endif
