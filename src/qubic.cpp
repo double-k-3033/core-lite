@@ -1172,7 +1172,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                         break;
                     }
                 }
-                missingTxDebug_onBroadcast(request->tick, *(const m256i*)digest, mtxSlot, mtxStored, mtxFull);
+                // missingTxDebug_onBroadcast(request->tick, *(const m256i*)digest, mtxSlot, mtxStored, mtxFull);
             }
             ts.tickData.releaseLock();
 
@@ -5518,7 +5518,7 @@ static void prepareNextTickTransactions()
         }
     }
 
-    missingTxDebug_reportMissingSet(nextTick, unknownTransactions);
+    // missingTxDebug_reportMissingSet(nextTick, unknownTransactions);
 
     nextTickTransactionsSemaphore = 0;
 }
