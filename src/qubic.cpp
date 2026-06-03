@@ -1133,7 +1133,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                 enqueueResponse(NULL, header);
             }
 
-            pendingTxsPool.add(request, isMainMode());
+            // pendingTxsPool.add(request, isMainMode());
 
             unsigned int tickIndex = ts.tickToIndexCurrentEpoch(request->tick);
             ts.tickData.acquireLock();
