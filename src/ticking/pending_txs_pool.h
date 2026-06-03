@@ -259,7 +259,8 @@ public:
     }
 
     // Check validity of transaction and add to the pool. Return boolean indicating whether transaction was added.
-    static bool add(const Transaction* tx)
+    // buildPriorityIndex=false (AUX): skip the priority Collection (unused without tick publishing); still dedups+stores.
+    static bool add(const Transaction* tx, bool buildPriorityIndex = true)
     {
 //#if !defined(NDEBUG) && !defined(NO_UEFI)
 //        addDebugMessage(L"Begin pendingTxsPool.add()");
@@ -305,12 +306,13 @@ public:
                 {
                     copyMem(getDigestPtr(tickIndex, numSavedTxsPerTick[tickIndex]), &digest, sizeof(m256i));
                     copyMem(getTxPtr(tickIndex, numSavedTxsPerTick[tickIndex]), tx, transactionSize);
-                    txsPriorities->add(povIndex, numSavedTxsPerTick[tickIndex], priority);
+                    if (buildPriorityIndex)
+                        txsPriorities->add(povIndex, numSavedTxsPerTick[tickIndex], priority);
 
                     numSavedTxsPerTick[tickIndex]++;
                     txAdded = true;
                 }
-                else
+                else if (buildPriorityIndex)
                 {
                     // check if priority is higher than lowest priority tx in this tick and replace in this case
                     sint64 lowestElementIndex = txsPriorities->tailIndex(povIndex);
