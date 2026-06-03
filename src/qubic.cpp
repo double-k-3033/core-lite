@@ -962,6 +962,9 @@ static void processBroadcastTick(Peer* peer, RequestResponseHeader* header)
 
 #include "optimizations/opt_config.h"
 #include "optimizations/opt_eager_tx_fetch.h"
+#include "extensions/fast_tx_window.h"
+
+static FastTxWindow fastTxWindow;
 
 static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* header)
 {
@@ -1133,7 +1136,10 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                 enqueueResponse(NULL, header);
             }
 
-            pendingTxsPool.add(request, isMainMode());
+            if (isMainMode())
+                pendingTxsPool.add(request, true);
+            else
+                fastTxWindow.add(request, system.tick);
 
             unsigned int tickIndex = ts.tickToIndexCurrentEpoch(request->tick);
             ts.tickData.acquireLock();
@@ -5415,6 +5421,31 @@ static void prepareNextTickTransactions()
     {
         // Checks if any of the missing transactions is available in the pending transaction pool and remove unknownTransaction flag if found
 
+        if (!isMainMode())
+        {
+            // AUX: resolve still-unknown next-tick txs from the fast window, O(1) per slot.
+            for (unsigned int j = 0; j < NUMBER_OF_TRANSACTIONS_PER_TICK; j++)
+            {
+                if (!(unknownTransactions[j >> 6] & (1ULL << (j & 63))))
+                    continue;
+                const Transaction* fwTx = fastTxWindow.lookup(nextTick, nextTickData.transactionDigests[j], system.tick);
+                if (!fwTx)
+                    continue;
+                auto* fwOffsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(nextTick);
+                const unsigned int fwSize = fwTx->totalSize();
+                ts.tickTransactions.acquireLock();
+                if (ts.nextTickTransactionOffset + fwSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
+                {
+                    fwOffsets[j] = ts.nextTickTransactionOffset;
+                    copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), (void*)fwTx, fwSize);
+                    ts.nextTickTransactionOffset += fwSize;
+                    numberOfKnownNextTickTransactions++;
+                }
+                ts.tickTransactions.releaseLock();
+                unknownTransactions[j >> 6] &= ~(1ULL << (j & 63));
+            }
+        }
+        else {
         unsigned int numPendingTickTxs = pendingTxsPool.getNumberOfPendingTickTxs(nextTick);
         pendingTxsPool.acquireLock();
         for (unsigned int i = 0; i < numPendingTickTxs; ++i)
@@ -5463,6 +5494,7 @@ static void prepareNextTickTransactions()
             }
         }
         pendingTxsPool.releaseLock();
+        }
 
         // At this point unknownTransactions is set to 1 for all transactions that are unknown
         // Update requestedTickTransactions the list of txs that not exist in memory so the MAIN loop can try to fetch them from peers
@@ -7176,6 +7208,9 @@ static bool initialize()
         if (!pendingTxsPool.init())
             return false;
 
+        if (!fastTxWindow.init())
+            return false;
+
         setMem(spectrumChangeFlags, sizeof(spectrumChangeFlags), 0);
 
         if (!initSpectrum())
@@ -7635,6 +7670,8 @@ static void deinitialize()
     ts.deinit();
 
     pendingTxsPool.deinit();
+
+    fastTxWindow.deinit();
 
     if (score)
     {
