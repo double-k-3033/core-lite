@@ -3285,6 +3285,7 @@ static bool makeAndBroadcastExecutionFeeTransaction(int i, BroadcastFutureTickDa
 static void processTick(unsigned long long processorNumber)
 {
     PROFILE_SCOPE();
+    TickBench::Scope _btTotal(TickBench::TICK_TOTAL);
 
 #ifdef TESTNET
     if (tickDelay > 0) {
@@ -3355,6 +3356,7 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): BEGIN_TICK");
+    TickBench::Scope _bBeginTick(TickBench::BEGIN_TICK);
     logger.registerNewTx(system.tick, logger.SC_BEGIN_TICK_TX);
     contractProcessorPhase = BEGIN_TICK;
     contractProcessorState = 1;
@@ -3379,6 +3381,7 @@ static void processTick(unsigned long long processorNumber)
         // Only apply skipping compute solution when in Mainnet with Aux node (except for last tick)
         if (isMainMode() || isTestnet() || isLastTickInEpoch()) {
             PROFILE_NAMED_SCOPE_BEGIN("processTick(): pre-scan solutions");
+            TickBench::Scope _bPrescan(TickBench::PRESCAN_SOLUTIONS);
             // reset solution task queue
             score->resetTaskQueue();
             // pre-scan any solution tx and add them to solution task queue
@@ -3420,6 +3423,7 @@ static void processTick(unsigned long long processorNumber)
                 // Process solutions in this tick and store in cache. In parallel, score->tryProcessSolution() is called by
                 // request processors to speed up solution processing.
                 PROFILE_NAMED_SCOPE("processTick(): process solutions");
+                TickBench::Scope _bProcSol(TickBench::PROCESS_SOLUTIONS);
                 score->startProcessTaskQueue();
                 while (!score->isTaskQueueProcessed()) {
                     score->tryProcessSolution(processorNumber);
@@ -3439,6 +3443,7 @@ static void processTick(unsigned long long processorNumber)
 
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
+        TickBench::Scope _bProcTxs(TickBench::PROCESS_TXS);
         unsigned int nTickLeaderTx = 0;
         unsigned int nProtocolTx = 0;
         unsigned int nContractTx = 0;
@@ -3668,10 +3673,13 @@ static void processTick(unsigned long long processorNumber)
     }
 
     // Generate subscription queries (may create queries that immediately timeout if the network was stuck)
-    oracleEngine.generateSubscriptionQueries();
+    {
+        TickBench::Scope _bOracle(TickBench::ORACLE);
+        oracleEngine.generateSubscriptionQueries();
 
-    // Check for oracle query timeouts (may schedule notification)
-    oracleEngine.processTimeouts();
+        // Check for oracle query timeouts (may schedule notification)
+        oracleEngine.processTimeouts();
+    }
 
     // Notify contracts about successfully obtained oracle replies and about errors (using contract processor)
     const OracleNotificationData* oracleNotification = oracleEngine.getNotification();
@@ -3794,6 +3802,7 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): END_TICK");
+    TickBench::Scope _bEndTick(TickBench::END_TICK);
     logger.registerNewTx(system.tick, logger.SC_END_TICK_TX);
     contractProcessorPhase = END_TICK;
     contractProcessorState = 1;
@@ -3801,6 +3810,7 @@ static void processTick(unsigned long long processorNumber)
     PROFILE_SCOPE_END();
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): get spectrum digest");
+    TickBench::Scope _bDigSpec(TickBench::DIGEST_SPECTRUM);
     unsigned int digestIndex;
     ACQUIRE(spectrumLock);
     for (digestIndex = 0; digestIndex < SPECTRUM_CAPACITY; digestIndex++)
@@ -3834,11 +3844,14 @@ static void processTick(unsigned long long processorNumber)
     RELEASE(spectrumLock);
     PROFILE_SCOPE_END();
 
-    getUniverseDigest(etalonTick.saltedUniverseDigest);
-
-    if (isMainMode() || isSystemAtSecurityTick() || isNextTickIsSecurityTick() || isLastTickInEpoch() || isThereQearnTx)
     {
-        getComputerDigest(etalonTick.saltedComputerDigest);
+        TickBench::Scope _bDigUC(TickBench::DIGEST_UNIVERSE_COMPUTER);
+        getUniverseDigest(etalonTick.saltedUniverseDigest);
+
+        if (isMainMode() || isSystemAtSecurityTick() || isNextTickIsSecurityTick() || isLastTickInEpoch() || isThereQearnTx)
+        {
+            getComputerDigest(etalonTick.saltedComputerDigest);
+        }
     }
 
 #if !defined(NDEBUG) && 1

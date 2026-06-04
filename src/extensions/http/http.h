@@ -2,6 +2,7 @@
 
 #include "../tx_stats.h"
 #include "../tx_slot_index.h"
+#include "../tick_bench.h"
 
 static unsigned long long httpPasscodes[4] = {};
 
