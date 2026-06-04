@@ -1132,8 +1132,8 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
         appendText(dbgMsg, L" valid");
 #endif
         unsigned char digest[32];
-        KangarooTwelve(request, transactionSize - SIGNATURE_SIZE, digest, sizeof(digest));
-        if (true || verify(request->sourcePublicKey.m256i_u8, digest, request->signaturePtr()))
+        // KangarooTwelve(request, transactionSize - SIGNATURE_SIZE, digest, sizeof(digest));
+        if (true /* || verify(request->sourcePublicKey.m256i_u8, digest, request->signaturePtr()) */)
         {
 #if !defined(NDEBUG) && 1
             appendText(dbgMsg, L" verified");
@@ -1147,7 +1147,13 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
             if (isMainMode())
                 pendingTxsPool.add(request, true);
             else
-                fastTxWindow.add(request, system.tick);
+            {
+                bool added = fastTxWindow.add(request, system.tick);
+                if (!added)
+                {
+                    return;
+                }
+            }
 
             unsigned int tickIndex = ts.tickToIndexCurrentEpoch(request->tick);
             ts.tickData.acquireLock();
