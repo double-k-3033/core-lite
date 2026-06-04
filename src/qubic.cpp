@@ -1120,6 +1120,12 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
     appendNumber(dbgMsg, system.tick, FALSE);
 #endif
 
+    // only process txs that in the fastTxWindow window
+    if (request->tick >= system.tick && request->tick <= (system.tick + 32))
+    {
+        return;
+    }
+
     if (request->checkValidity() && transactionSize == header->size() - sizeof(RequestResponseHeader))
     {
 #if !defined(NDEBUG) && 1

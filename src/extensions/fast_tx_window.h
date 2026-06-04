@@ -33,6 +33,7 @@ protected:
     inline static unsigned char* bodyPtr(unsigned int slab, unsigned int i) { return bodies + (slab * SLOTS + i) * MAX_TRANSACTION_SIZE; }
     inline static unsigned int* hashAt(unsigned int slab, unsigned int h) { return &hashIndex[slab * HASH_SLOTS + h]; }
 
+public:
     // Window holds future ticks only: (currentTick, currentTick + W].
     inline static bool inWindow(unsigned int tick, unsigned int currentTick)
     {
