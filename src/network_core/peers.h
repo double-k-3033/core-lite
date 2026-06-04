@@ -255,7 +255,9 @@ static bool isPrivateIp(const unsigned char address[4])
     return false;
 }
 
-static void closePeer(Peer* peer, int closeGracefullyRetries = 0)
+#include "extensions/peer_disc_stats.h"
+
+static void closePeer(Peer* peer, int closeGracefullyRetries = 0, unsigned int discReason = PeerDisc::OTHER)
 {
     PROFILE_SCOPE();
     ASSERT(isMainProcessor());
@@ -264,6 +266,7 @@ static void closePeer(Peer* peer, int closeGracefullyRetries = 0)
         if (!peer->isClosing)
         {
             peer->isClosing = TRUE;
+            PeerDisc::note(discReason, (unsigned int)(peer - peers));
             if (peer->isOracleMachineNode())
             {
                 // Track close time for OM nodes to enable reconnection cooldown
@@ -819,7 +822,7 @@ static bool peerConnectionNewlyEstablished(unsigned int i)
                 peers[i].connectAcceptToken.CompletionToken.Status = -1;
                 penalizePublicPeerRejectedConnection(peers[i].address);
 
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::CONNECT_REJECT);
 
             }
             else
@@ -931,7 +934,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
             if (peers[i].receiveToken.CompletionToken.Status)
             {
                 peers[i].receiveToken.CompletionToken.Status = -1;
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::RECV_ERR);
             }
             else
             {
@@ -961,7 +964,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
                             appendText(message, L"...");
                             logToConsole(message);
                             forgetPublicPeer(peers[i].address);
-                            closePeer(&peers[i]);
+                            closePeer(&peers[i], 0, PeerDisc::PROTO_VIOLATION);
                             peerForgotten = true;
                             break;
                         }
@@ -1070,7 +1073,7 @@ static void receiveData(unsigned int i, unsigned int salt)
                     if ((status = peers[i].tcp4Protocol->GetModeData(peers[i].tcp4Protocol, &state, NULL, NULL, NULL, NULL))
                         || state == Tcp4StateClosed)
                     {
-                        closePeer(&peers[i]);
+                        closePeer(&peers[i], 0, PeerDisc::RECV_FIN_POLL);
                     }
                     else
                     {
@@ -1083,7 +1086,7 @@ static void receiveData(unsigned int i, unsigned int salt)
                                 logStatusToConsole(L"EFI_TCP4_PROTOCOL.Receive() fails", status, __LINE__);
                             }
 
-                            closePeer(&peers[i]);
+                            closePeer(&peers[i], 0, PeerDisc::RECV_INIT_FAIL);
                         }
                         else
                         {
@@ -1124,7 +1127,7 @@ static void processTransmittedData(unsigned int i, unsigned int salt)
             {
                 // transmission error
                 peers[i].transmitToken.CompletionToken.Status = -1;
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::XMIT_ERR);
             }
             else
             {
@@ -1164,7 +1167,7 @@ static void transmitData(unsigned int i, unsigned int salt)
             if ((status = peers[i].tcp4Protocol->GetModeData(peers[i].tcp4Protocol, &state, NULL, NULL, NULL, NULL))
                 || state == Tcp4StateClosed)
             {
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::XMIT_GETMODE);
             }
             else
             {
@@ -1174,7 +1177,7 @@ static void transmitData(unsigned int i, unsigned int salt)
                 if (status = peers[i].tcp4Protocol->Transmit(peers[i].tcp4Protocol, &peers[i].transmitToken))
                 {
                     logStatusToConsole(L"EFI_TCP4_PROTOCOL.Transmit() fails", status, __LINE__);
-                    closePeer(&peers[i]);
+                    closePeer(&peers[i], 0, PeerDisc::XMIT_INIT_FAIL);
                 }
                 else
                 {

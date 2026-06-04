@@ -18,7 +18,56 @@ public:
     ADD_METHOD_TO(RpcStatsController::richList, "/v1/rich-list", Get);
     ADD_METHOD_TO(RpcStatsController::txStats, "/v1/tx-stats", Get);
     ADD_METHOD_TO(RpcStatsController::tickBench, "/v1/tick-bench", Get);
+    ADD_METHOD_TO(RpcStatsController::peerStats, "/v1/peer-stats", Get);
     METHOD_LIST_END
+
+    // Peer connection state + disconnect-reason counters (why handshaked peers drop).
+    inline void peerStats(const HttpRequestPtr &req,
+                         std::function<void(const HttpResponsePtr &)> &&cb)
+    {
+        using namespace std;
+        Json::Value result;
+
+        Json::Value reasons;
+        for (unsigned int r = 0; r < PeerDisc::REASON_COUNT; r++)
+            reasons[PeerDisc::kName[r]] = Json::UInt64(PeerDisc::gReasonCount[r].load(memory_order_relaxed));
+        result["disconnectReasons"] = reasons;
+        result["disconnectTotal"] = Json::UInt64(PeerDisc::gTotal.load(memory_order_relaxed));
+        unsigned int last = PeerDisc::gLastReason.load(memory_order_relaxed);
+        result["lastReason"] = PeerDisc::kName[last < PeerDisc::REASON_COUNT ? last : 0];
+
+        unsigned int connected = 0, handshaked = 0;
+        Json::Value slots(Json::arrayValue);
+        unsigned int n = NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTIONS;
+        for (unsigned int i = 0; i < n; i++)
+        {
+            auto &p = peers[i];
+            Json::Value e;
+            e["slot"] = i;
+            e["outgoing"] = (i < NUMBER_OF_OUTGOING_CONNECTIONS);
+            e["hasConn"] = (((unsigned long long)p.tcp4Protocol) > 1);
+            e["connected"] = (bool)p.isConnectedAccepted;
+            e["handshaked"] = (bool)p.exchangedPublicPeers;
+            e["closing"] = (bool)p.isClosing;
+            e["incoming"] = (bool)p.isIncommingConnection;
+            e["peerReportedTick"] = p.peerReportedTick;
+            e["lastActiveTick"] = p.lastActiveTick;
+            e["ip"] = std::to_string(p.address.u8[0]) + "." + std::to_string(p.address.u8[1]) + "." +
+                      std::to_string(p.address.u8[2]) + "." + std::to_string(p.address.u8[3]);
+            unsigned int sc = (i < PeerDisc::MAX_SLOTS) ? PeerDisc::gSlotCount[i].load(memory_order_relaxed) : 0;
+            unsigned int sr = (i < PeerDisc::MAX_SLOTS) ? PeerDisc::gSlotLastReason[i].load(memory_order_relaxed) : 0;
+            e["disconnects"] = Json::UInt(sc);
+            e["lastReason"] = PeerDisc::kName[sr < PeerDisc::REASON_COUNT ? sr : 0];
+            if (p.isConnectedAccepted) connected++;
+            if (p.exchangedPublicPeers) handshaked++;
+            slots.append(e);
+        }
+        result["connectedCount"] = connected;
+        result["handshakedCount"] = handshaked;
+        result["peers"] = slots;
+        result["currentTick"] = system.tick;
+        cb(HttpResponse::newHttpJsonResponse(result));
+    }
 
     // Per-phase processTick() timings (TSC). Query: reset=1 clears counters after reading.
     inline void tickBench(const HttpRequestPtr &req,
