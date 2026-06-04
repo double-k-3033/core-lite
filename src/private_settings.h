@@ -1380,7 +1380,7 @@ static unsigned char customSeeds[][55 + 1] = {
 // Enter static IPs of peers (ideally at least 4 including your own IP) to disseminate them to other peers.
 // You can find current peer IPs at https://app.qubic.li/network/live
 static const unsigned char knownPublicPeers[][4] = {
-    // {127, 0, 0, 1}, // DONT REMOVE THIS
+    {127, 0, 0, 1}, // DONT REMOVE THIS
     // Add more node ips here
 };
 

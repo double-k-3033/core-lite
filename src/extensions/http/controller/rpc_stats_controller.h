@@ -59,6 +59,7 @@ public:
             e["disconnects"] = Json::UInt(sc);
             e["lastReason"] = PeerDisc::kName[sr < PeerDisc::REASON_COUNT ? sr : 0];
             e["rxBytes"] = Json::UInt64((i < PeerDisc::MAX_SLOTS) ? PeerDisc::gSlotRxBytes[i].load(memory_order_relaxed) : 0);
+            e["txBytes"] = Json::UInt64((i < PeerDisc::MAX_SLOTS) ? PeerDisc::gSlotTxBytes[i].load(memory_order_relaxed) : 0);
             if (p.isConnectedAccepted) connected++;
             if (p.exchangedPublicPeers) handshaked++;
             slots.append(e);
