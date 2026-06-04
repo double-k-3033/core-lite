@@ -181,7 +181,7 @@ TickStorage::TransactionsDigestAccess TickStorage::transactionsDigestAccess;
 ////////// Qubic \\\\\\\\\\
 
 #define CONTRACT_STATES_DEPTH 10 // Is derived from MAX_NUMBER_OF_CONTRACTS (=N)
-#define TICK_REQUESTING_PERIOD 500ULL
+#define TICK_REQUESTING_PERIOD 100ULL
 #define MAX_NUMBER_EPOCH 1000ULL
 #define MAX_NUMBER_OF_MINERS 8192
 #if defined(TESTNET) && defined(TESTNET_LITE_RAM)
