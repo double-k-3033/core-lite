@@ -1121,7 +1121,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
 #endif
 
     // only process txs that in the fastTxWindow window
-    if (request->tick >= system.tick && request->tick <= (system.tick + 32))
+    if (!(request->tick >= system.tick && request->tick <= (system.tick + 32)))
     {
         return;
     }
