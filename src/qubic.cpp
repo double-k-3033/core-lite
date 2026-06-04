@@ -1032,6 +1032,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                 addDebugMessage(dbgMsg1);
 #endif
 
+                bool accepted = false;
                 ts.tickData.acquireLock();
                 TickData& td = ts.tickData.getByTickInCurrentEpoch(request->tickData.tick);
                 if (td.epoch != INVALIDATED_TICK_DATA)
@@ -1047,6 +1048,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                                 copyMem(&td, &request->tickData, sizeof(TickData));
                                 peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
                                 peer->peerReportedTick = max(peer->peerReportedTick, request->tickData.tick);
+                                accepted = true;
 
                                 if (memcmp(&td, &request->tickData, sizeof(TickData)) != 0)
                                 {
@@ -1092,6 +1094,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                             copyMem(&td, &request->tickData, sizeof(TickData));
                             peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
                             peer->peerReportedTick = max(peer->peerReportedTick, request->tickData.tick);
+                            accepted = true;
 
 #if USE_EAGER_TX_FETCH
                             ts.tickData.releaseLock();
@@ -1102,6 +1105,8 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                     }
                 }
                 ts.tickData.releaseLock();
+                if (accepted)
+                    TxSlotIndex::build(request->tickData.tick, request->tickData.transactionDigests);
             }
         }
     }
@@ -1162,29 +1167,30 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
             {
                 KangarooTwelve(request, transactionSize, digest, sizeof(digest));
                 auto* tsReqTickTransactionOffsets = ts.tickTransactionOffsets.getByTickIndex(tickIndex);
-                int mtxSlot = -1;
+                int mtxSlot = TxSlotIndex::lookup(request->tick, *(const m256i*)digest);
                 bool mtxStored = false, mtxFull = false;
-                for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
+                if (mtxSlot == -2) // index not built yet: linear fallback keeps result correct
                 {
-                    if (digest == ts.tickData[tickIndex].transactionDigests[i])
+                    for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
+                        if (digest == ts.tickData[tickIndex].transactionDigests[i]) { mtxSlot = (int)i; break; }
+                }
+                if (mtxSlot >= 0)
+                {
+                    unsigned int i = (unsigned int)mtxSlot;
+                    ts.tickTransactions.acquireLock();
+                    const bool mtxWasEmpty = !tsReqTickTransactionOffsets[i];
+                    if (!tsReqTickTransactionOffsets[i])
                     {
-                        mtxSlot = (int)i;
-                        ts.tickTransactions.acquireLock();
-                        const bool mtxWasEmpty = !tsReqTickTransactionOffsets[i];
-                        if (!tsReqTickTransactionOffsets[i])
+                        if (ts.nextTickTransactionOffset + transactionSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
                         {
-                            if (ts.nextTickTransactionOffset + transactionSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
-                            {
-                                tsReqTickTransactionOffsets[i] = ts.nextTickTransactionOffset;
-                                copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), request, transactionSize);
-                                ts.nextTickTransactionOffset += transactionSize;
-                            }
+                            tsReqTickTransactionOffsets[i] = ts.nextTickTransactionOffset;
+                            copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), request, transactionSize);
+                            ts.nextTickTransactionOffset += transactionSize;
                         }
-                        ts.tickTransactions.releaseLock();
-                        mtxStored = mtxWasEmpty && tsReqTickTransactionOffsets[i];
-                        mtxFull = mtxWasEmpty && !tsReqTickTransactionOffsets[i];
-                        break;
                     }
+                    ts.tickTransactions.releaseLock();
+                    mtxStored = mtxWasEmpty && tsReqTickTransactionOffsets[i];
+                    mtxFull = mtxWasEmpty && !tsReqTickTransactionOffsets[i];
                 }
                 // missingTxDebug_onBroadcast(request->tick, *(const m256i*)digest, mtxSlot, mtxStored, mtxFull);
                 if (mtxStored) TxStats::onStored(request->tick);
