@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../tx_stats.h"
+
 static unsigned long long httpPasscodes[4] = {};
 
 #ifdef __linux__

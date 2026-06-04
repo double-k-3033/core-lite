@@ -16,7 +16,47 @@ public:
     ADD_METHOD_TO(RpcStatsController::queryAssetOwners, "/v1/issuers/{issuerIdentity}/assets/{assetName}/owners", Get);
     ADD_METHOD_TO(RpcStatsController::latestStats, "/v1/latest-stats", Get);
     ADD_METHOD_TO(RpcStatsController::richList, "/v1/rich-list", Get);
+    ADD_METHOD_TO(RpcStatsController::txStats, "/v1/tx-stats", Get);
     METHOD_LIST_END
+
+    // Broadcast-tx throughput counters from processBroadcastTransaction().
+    // Query: count = number of recent target-ticks to return (default 20, max RING).
+    inline void txStats(const HttpRequestPtr &req,
+                        std::function<void(const HttpResponsePtr &)> &&cb)
+    {
+        using namespace std;
+        Json::Value result;
+        Json::Value data;
+        data["totalReceived"] = Json::UInt64(TxStats::gTotalReceived.load(memory_order_relaxed));
+        data["totalValid"] = Json::UInt64(TxStats::gTotalValid.load(memory_order_relaxed));
+        data["totalStored"] = Json::UInt64(TxStats::gTotalStored.load(memory_order_relaxed));
+        uint32_t last = TxStats::gLastTick.load(memory_order_relaxed);
+        data["lastTick"] = Json::UInt(last);
+        data["currentTick"] = system.tick;
+
+        long long count = 20;
+        if (req->getParameter("count") != "")
+            count = std::stoll(req->getParameter("count"));
+        if (count < 0) count = 0;
+        if (count > (long long)TxStats::RING) count = TxStats::RING;
+
+        Json::Value perTick(Json::arrayValue);
+        for (long long i = count - 1; i >= 0; i--)
+        {
+            if ((long long)last - i < 0) continue;
+            uint32_t t = (uint32_t)(last - i);
+            TxStats::TickSlot &s = TxStats::gRing[t & TxStats::RING_MASK];
+            if (s.tick.load(memory_order_relaxed) != t) continue; // evicted / never seen
+            Json::Value e;
+            e["tick"] = Json::UInt(t);
+            e["received"] = Json::UInt(s.received.load(memory_order_relaxed));
+            e["stored"] = Json::UInt(s.stored.load(memory_order_relaxed));
+            perTick.append(e);
+        }
+        data["perTick"] = perTick;
+        result["data"] = data;
+        cb(HttpResponse::newHttpJsonResponse(result));
+    }
 
     inline void queryAssetOwners(const HttpRequestPtr &req,
                                  std::function<void(const HttpResponsePtr &)> &&cb,

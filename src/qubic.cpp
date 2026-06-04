@@ -1111,6 +1111,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
 {
     Transaction* request = header->getPayload<Transaction>();
     const unsigned int transactionSize = request->totalSize();
+    TxStats::onReceive();
 
 #if !defined(NDEBUG) && 1
     // TODO: remove this debug code when the OM pipeline is fully stable
@@ -1131,6 +1132,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
 #if !defined(NDEBUG) && 1
             appendText(dbgMsg, L" verified");
 #endif
+            TxStats::onValid(request->tick);
             if (header->isDejavuZero())
             {
                 enqueueResponse(NULL, header);
@@ -1173,6 +1175,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                     }
                 }
                 // missingTxDebug_onBroadcast(request->tick, *(const m256i*)digest, mtxSlot, mtxStored, mtxFull);
+                if (mtxStored) TxStats::onStored(request->tick);
             }
             ts.tickData.releaseLock();
 
