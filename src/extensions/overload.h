@@ -1072,7 +1072,7 @@ struct Overload {
             auto now = std::chrono::system_clock::now();
             long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
             if (ms - latestConnectTimestampMap[ipInNumber] < 2'000) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5'000));
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             tcpData->connectStatus = ConnectStatus::Connecting;
             if (connect(tcpData->socket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
