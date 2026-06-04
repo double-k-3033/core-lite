@@ -33,6 +33,14 @@ static std::atomic<unsigned long long> gTotal{0};
 static std::atomic<unsigned int> gLastReason{0};
 static std::atomic<unsigned int> gSlotCount[MAX_SLOTS];      // disconnects per peer slot
 static std::atomic<unsigned int> gSlotLastReason[MAX_SLOTS];
+static std::atomic<unsigned long long> gSlotRxBytes[MAX_SLOTS]; // cumulative bytes received per slot
+
+// Records bytes received on a peer slot.
+static inline void noteRx(unsigned int slot, unsigned long long bytes)
+{
+    if (slot < MAX_SLOTS)
+        gSlotRxBytes[slot].fetch_add(bytes, std::memory_order_relaxed);
+}
 
 // Records one real disconnect. Call once per actual close (inside the !isClosing guard).
 static inline void note(unsigned int reason, unsigned int slot)

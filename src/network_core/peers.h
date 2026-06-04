@@ -946,6 +946,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
                 else
                 {
                     numberOfReceivedBytes += peers[i].receiveData.DataLength;
+                    PeerDisc::noteRx(i, peers[i].receiveData.DataLength);
                     *((unsigned long long*) & peers[i].receiveData.FragmentTable[0].FragmentBuffer) += peers[i].receiveData.DataLength;
 
                     // Parse every complete packet in place, advancing a read cursor per packet.
