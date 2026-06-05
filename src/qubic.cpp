@@ -1137,8 +1137,8 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
         appendText(dbgMsg, L" valid");
 #endif
         unsigned char digest[32];
-        // KangarooTwelve(request, transactionSize - SIGNATURE_SIZE, digest, sizeof(digest));
-        if (true /* || verify(request->sourcePublicKey.m256i_u8, digest, request->signaturePtr()) */)
+        KangarooTwelve(request, transactionSize - SIGNATURE_SIZE, digest, sizeof(digest));
+        if (verify(request->sourcePublicKey.m256i_u8, digest, request->signaturePtr()))
         {
 #if !defined(NDEBUG) && 1
             appendText(dbgMsg, L" verified");
