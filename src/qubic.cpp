@@ -1125,12 +1125,6 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
     appendNumber(dbgMsg, system.tick, FALSE);
 #endif
 
-    // only process txs that in the fastTxWindow window
-    if (!(request->tick >= system.tick && request->tick <= (system.tick + 32)))
-    {
-        return;
-    }
-
     if (request->checkValidity() && transactionSize == header->size() - sizeof(RequestResponseHeader))
     {
 #if !defined(NDEBUG) && 1
@@ -1153,8 +1147,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                 pendingTxsPool.add(request, true);
             else
             {
-                bool added = fastTxWindow.add(request, system.tick);
-                if (!added)
+                if (!fastTxWindow.add(request, system.tick))
                 {
                     return;
                 }
@@ -1172,7 +1165,9 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
                 if (mtxSlot == -2) // index not built yet: linear fallback keeps result correct
                 {
                     for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
+                    {
                         if (digest == ts.tickData[tickIndex].transactionDigests[i]) { mtxSlot = (int)i; break; }
+                    }
                 }
                 if (mtxSlot >= 0)
                 {
@@ -3356,11 +3351,12 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): BEGIN_TICK");
-    TickBench::Scope _bBeginTick(TickBench::BEGIN_TICK);
+    unsigned long long _btBeginTickStart = __rdtsc();
     logger.registerNewTx(system.tick, logger.SC_BEGIN_TICK_TX);
     contractProcessorPhase = BEGIN_TICK;
     contractProcessorState = 1;
     WAIT_WHILE(contractProcessorState);
+    TickBench::add(TickBench::BEGIN_TICK, _btBeginTickStart, __rdtsc());
     PROFILE_SCOPE_END();
 
     latestIncomingTransferTickPreservePubkeys.clear();
@@ -3381,7 +3377,7 @@ static void processTick(unsigned long long processorNumber)
         // Only apply skipping compute solution when in Mainnet with Aux node (except for last tick)
         if (isMainMode() || isTestnet() || isLastTickInEpoch()) {
             PROFILE_NAMED_SCOPE_BEGIN("processTick(): pre-scan solutions");
-            TickBench::Scope _bPrescan(TickBench::PRESCAN_SOLUTIONS);
+            unsigned long long _bPrescanStart = __rdtsc();
             // reset solution task queue
             score->resetTaskQueue();
             // pre-scan any solution tx and add them to solution task queue
@@ -3418,6 +3414,7 @@ static void processTick(unsigned long long processorNumber)
                 }
             }
 
+            TickBench::add(TickBench::PRESCAN_SOLUTIONS, _bPrescanStart, __rdtsc());
             PROFILE_SCOPE_END();
             {
                 // Process solutions in this tick and store in cache. In parallel, score->tryProcessSolution() is called by
@@ -3443,7 +3440,7 @@ static void processTick(unsigned long long processorNumber)
 
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
-        TickBench::Scope _bProcTxs(TickBench::PROCESS_TXS);
+        unsigned long long _bProcTxsStart = __rdtsc();
         unsigned int nTickLeaderTx = 0;
         unsigned int nProtocolTx = 0;
         unsigned int nContractTx = 0;
@@ -3610,6 +3607,7 @@ static void processTick(unsigned long long processorNumber)
                 revenueOnTick(tickOffset, gTxObservation);
             }
         }
+        TickBench::add(TickBench::PROCESS_TXS, _bProcTxsStart, __rdtsc());
         PROFILE_SCOPE_END();
     }
     else
@@ -3802,15 +3800,16 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): END_TICK");
-    TickBench::Scope _bEndTick(TickBench::END_TICK);
+    unsigned long long _bEndTickStart = __rdtsc();
     logger.registerNewTx(system.tick, logger.SC_END_TICK_TX);
     contractProcessorPhase = END_TICK;
     contractProcessorState = 1;
     WAIT_WHILE(contractProcessorState);
+    TickBench::add(TickBench::END_TICK, _bEndTickStart, __rdtsc());
     PROFILE_SCOPE_END();
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): get spectrum digest");
-    TickBench::Scope _bDigSpec(TickBench::DIGEST_SPECTRUM);
+    unsigned long long _bDigSpecStart = __rdtsc();
     unsigned int digestIndex;
     ACQUIRE(spectrumLock);
     for (digestIndex = 0; digestIndex < SPECTRUM_CAPACITY; digestIndex++)
@@ -3842,6 +3841,7 @@ static void processTick(unsigned long long processorNumber)
 
     etalonTick.saltedSpectrumDigest = spectrumDigests[(SPECTRUM_CAPACITY * 2 - 1) - 1];
     RELEASE(spectrumLock);
+    TickBench::add(TickBench::DIGEST_SPECTRUM, _bDigSpecStart, __rdtsc());
     PROFILE_SCOPE_END();
 
     {

@@ -320,13 +320,12 @@ public:
                 {
                     copyMem(getDigestPtr(tickIndex, numSavedTxsPerTick[tickIndex]), &digest, sizeof(m256i));
                     copyMem(getTxPtr(tickIndex, numSavedTxsPerTick[tickIndex]), tx, transactionSize);
-                    if (buildPriorityIndex)
-                        txsPriorities->add(povIndex, numSavedTxsPerTick[tickIndex], priority);
+                    txsPriorities->add(povIndex, numSavedTxsPerTick[tickIndex], priority);
 
                     numSavedTxsPerTick[tickIndex]++;
                     txAdded = true;
                 }
-                else if (buildPriorityIndex)
+                else
                 {
                     // check if priority is higher than lowest priority tx in this tick and replace in this case
                     sint64 lowestElementIndex = txsPriorities->tailIndex(povIndex);
