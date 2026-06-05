@@ -1102,14 +1102,13 @@ struct Overload {
             TransmitRequest request = transmitQueue.pop();
             int totalSentBytes = 0;
             auto& fragment = request.token->Packet.TxData->FragmentTable[0];
-            auto startTime = std::chrono::high_resolution_clock::now();
-            auto endTime = std::chrono::high_resolution_clock::now();
-            unsigned long long totalNanoseconds = 0;
+            // Abort a send only after 5s of zero progress (not total time) so big transfers aren't cut mid-stream.
+            constexpr unsigned long long NO_PROGRESS_TIMEOUT_NS = 5'000'000'000ULL;
+            auto lastProgress = std::chrono::high_resolution_clock::now();
             while ((unsigned int)totalSentBytes < fragment.FragmentLength)
             {
-                endTime = std::chrono::high_resolution_clock::now();
-                totalNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
-                if (totalNanoseconds > 1'000'000'000) { // 1 seconds timeout
+                auto now = std::chrono::high_resolution_clock::now();
+                if ((unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now - lastProgress).count() > NO_PROGRESS_TIMEOUT_NS) {
                     request.token->CompletionToken.Status = EFI_TIMEOUT;
                     break;
                 }
@@ -1117,6 +1116,7 @@ struct Overload {
                 if (n > 0)
                 {
                     totalSentBytes += n;
+                    lastProgress = now;
                 } else if (n == 0)
                 {
                     // connection closed

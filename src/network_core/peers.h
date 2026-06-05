@@ -178,8 +178,7 @@ static Peer peers[NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTION
 static volatile long long numberOfReceivedBytes = 0, prevNumberOfReceivedBytes = 0;
 static volatile long long numberOfTransmittedBytes = 0, prevNumberOfTransmittedBytes = 0;
 static int numberOfAcceptedIncommingConnection = 0;
-// Cap on how many incoming slots may arm Accept() (runtime: --max-inbound / /set-max-inbound).
-// Default = all incoming slots (no cap). Lower during catch-up to stop serving inbound peers.
+// Max incoming slots allowed to arm Accept() (--max-inbound / /set-max-inbound); default = all.
 static int maxInboundAccepts = NUMBER_OF_INCOMING_CONNECTIONS;
 
 static volatile char publicPeersLock = 0;
@@ -398,7 +397,9 @@ static void pushCustom(RequestResponseHeader* requestResponseHeader, int numberO
     unsigned short numberOfSuitablePeers = 0;
     for (unsigned int i = 0; i < NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTIONS; i++)
     {
-        if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted && peers[i].exchangedPublicPeers && !peers[i].isClosing)
+        // Outbound (dialed) peers are request-eligible once connected, before ExchangePublicPeers arrives.
+        if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted
+            && (i < NUMBER_OF_OUTGOING_CONNECTIONS || peers[i].exchangedPublicPeers) && !peers[i].isClosing)
         {
             if ((filterFullNode && peers[i].isFullNode()) || (!filterFullNode))
             {
@@ -503,7 +504,7 @@ static void pushPreferringAtOrAbove(
     for (unsigned int i = 0; i < NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTIONS; i++)
     {
         if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted
-            && peers[i].exchangedPublicPeers && !peers[i].isClosing)
+            && (i < NUMBER_OF_OUTGOING_CONNECTIONS || peers[i].exchangedPublicPeers) && !peers[i].isClosing)
         {
             if (peers[i].peerReportedTick >= targetTick)
                 qualified[numQualified++] = i;
