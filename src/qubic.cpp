@@ -9489,7 +9489,8 @@ void processArgs(int argc, const char* argv[]) {
         ("http-port", "Port for the built-in HTTP/RPC server to listen on", cxxopts::value<int>()->default_value("41841"))
         ("static-peers", "Run in static peer mode: do not add/remove peers, do not churn 25% of non-fullnode peers every 2 minutes, do not accept new incoming connections. Useful for nodes far from the network's center of mass where the default churn drops good peers before they're classified as fullnodes.")
         ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
-        ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"));
+        ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"))
+        ("max-inbound", "Max number of inbound connection slots that may accept. Lower during catch-up to stop serving inbound peers (0 = reject all inbound, like static). Default = all incoming slots.", cxxopts::value<int>()->default_value("-1"));
     auto result = options.parse(argc, argv);
 
 #ifdef __linux__
@@ -9549,6 +9550,13 @@ void processArgs(int argc, const char* argv[]) {
         logColorToScreen("INFO", "Security tick set to " + std::to_string(securityTick));
     }
 
+    {
+        int mi = result["max-inbound"].as<int>();
+        if (mi >= 0) {
+            maxInboundAccepts = mi > NUMBER_OF_INCOMING_CONNECTIONS ? NUMBER_OF_INCOMING_CONNECTIONS : mi;
+            logToConsole((L"Max inbound accepts capped at " + std::to_wstring(maxInboundAccepts)).c_str());
+        }
+    }
     if (result.count("auto-flush-stuck-seconds")) {
         autoFlushStuckSeconds = result["auto-flush-stuck-seconds"].as<int>();
         if (autoFlushStuckSeconds < 0) autoFlushStuckSeconds = 0;

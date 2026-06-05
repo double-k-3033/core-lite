@@ -178,6 +178,9 @@ static Peer peers[NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTION
 static volatile long long numberOfReceivedBytes = 0, prevNumberOfReceivedBytes = 0;
 static volatile long long numberOfTransmittedBytes = 0, prevNumberOfTransmittedBytes = 0;
 static int numberOfAcceptedIncommingConnection = 0;
+// Cap on how many incoming slots may arm Accept() (runtime: --max-inbound / /set-max-inbound).
+// Default = all incoming slots (no cap). Lower during catch-up to stop serving inbound peers.
+static int maxInboundAccepts = NUMBER_OF_INCOMING_CONNECTIONS;
 
 static volatile char publicPeersLock = 0;
 static unsigned int numberOfPublicPeers = 0;
@@ -1305,8 +1308,8 @@ static void peerReconnectIfInactive(unsigned int i, unsigned short port)
         else
         {
             // incoming connection:
-            // accept connections if peer list is not static
-            if (!listOfPeersIsStatic)
+            // accept connections if peer list is not static and inbound cap not reached
+            if (!listOfPeersIsStatic && (i - NUMBER_OF_OUTGOING_CONNECTIONS) < (unsigned int)maxInboundAccepts)
             {
                 peers[i].isIncommingConnection = TRUE;
                 peers[i].receiveData.FragmentTable[0].FragmentBuffer = peers[i].receiveBuffer;
