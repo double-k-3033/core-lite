@@ -9554,7 +9554,7 @@ void processArgs(int argc, const char* argv[]) {
         int mi = result["max-inbound"].as<int>();
         if (mi >= 0) {
             maxInboundAccepts = mi > NUMBER_OF_INCOMING_CONNECTIONS ? NUMBER_OF_INCOMING_CONNECTIONS : mi;
-            logToConsole((L"Max inbound accepts capped at " + std::to_wstring(maxInboundAccepts)).c_str());
+            logColorToScreen("INFO", "Max inbound accepts capped at " + std::to_string(maxInboundAccepts));
         }
     }
     if (result.count("auto-flush-stuck-seconds")) {
