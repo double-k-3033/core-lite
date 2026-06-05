@@ -871,7 +871,9 @@ struct Overload {
 				    pfd.events = POLLIN | POLLERR | POLLHUP;
 				    int ret = poll(&pfd, 1, 0);
 #endif
-                    if (ret > 0 && (pfd.revents & (POLLERR | POLLHUP))) {
+                    // On POLLHUP with data still readable, stay Established so recv() drains it first (clean close on EOF).
+                    const bool closed = (pfd.revents & POLLERR) || ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN));
+                    if (ret > 0 && closed) {
                         *Tcp4State = Tcp4StateClosed;
                         tcpData.connectStatus = ConnectStatus::Error;
                     }
