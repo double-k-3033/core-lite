@@ -2036,6 +2036,7 @@ static void requestProcessor(void* ProcedureArgument, unsigned long long process
     RequestResponseHeader* header = (RequestResponseHeader*)processor->buffer;
     while (!shutDownNode)
     {
+        PinScope _pinScope; // release swap-page pins taken while handling this request
         checkinTime(processorNumber);
         std::this_thread::sleep_for(std::chrono::microseconds(50));
         // in epoch transition, wait here
@@ -2340,6 +2341,7 @@ static void contractProcessor(void*, unsigned long long processorNumber)
     enableAVX();
 
     PROFILE_SCOPE();
+    PinScope _pinScope; // release any swap-page pins taken during this contract execution
 
     //const unsigned long long processorNumber = getRunningProcessorID();
 
@@ -6276,6 +6278,20 @@ static void tickProcessor(void*, unsigned long long processorNumber)
     while (!shutDownNode)
     {
         PROFILE_NAMED_SCOPE("tickProcessor(): loop iteration");
+        if (tlPinArena.count != 0) // leaked swap pins from a prior iteration: a missing/removed PinScope boundary
+        {
+            static bool loggedPinLeak = false;
+            if (!loggedPinLeak)
+            {
+                loggedPinLeak = true;
+                CHAR16 pinLeakMsg[128];
+                setText(pinLeakMsg, L"WARN: swap pin arena not drained at tickProcessor loop top (leaked=");
+                appendNumber(pinLeakMsg, (unsigned long long)tlPinArena.count, false);
+                appendText(pinLeakMsg, L") - missing PinScope, swap cache will starve");
+                logToConsole(pinLeakMsg);
+            }
+        }
+        PinScope _pinScope; // release swap-page pins taken during this tick-processing iteration
 
         checkinTime(processorNumber);
 
@@ -8822,6 +8838,7 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
             logToConsole(L"Init complete! Entering main loop ...");
             while (!shutDownNode)
             {
+                PinScope _pinScope; // release swap-page pins taken during this main-loop iteration
                 if (criticalSituation == 1)
                 {
                     logToConsole(L"CRITICAL SITUATION #1!!!");
@@ -8839,6 +8856,17 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
 
                     PROFILE_NAMED_SCOPE("main loop: updateTime()");
                     updateTime();
+                }
+
+                // Swap VM pin/cache stats: print one VM per ~second so operators can watch pin
+                // pressure (pinnedHighWater vs cache size) without flooding the console.
+                static unsigned long long swapStatsTick = 0;
+                static int swapStatsVmIndex = 0;
+                if (curTimeTick - swapStatsTick >= frequency)
+                {
+                    swapStatsTick = curTimeTick;
+                    const int swapVmCount = ts.printSwapVmStat(swapStatsVmIndex);
+                    swapStatsVmIndex = (swapStatsVmIndex + 1) % swapVmCount;
                 }
 
                 if (contractProcessorState == 1)

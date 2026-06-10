@@ -293,6 +293,10 @@ private:
             [](const HttpRequestPtr &req,
                const HttpResponsePtr &resp)
             {
+                // Release any swap-cache page pins taken while serving this request (the
+                // handler ran on this same loop thread). See releaseThreadPins / PinScope.
+                releaseThreadPins();
+
                 auto end = std::chrono::steady_clock::now();
                 std::chrono::steady_clock::time_point start;
                 try
