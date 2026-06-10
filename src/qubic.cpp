@@ -64,7 +64,7 @@
 
 // #define INCLUDE_CONTRACT_TEST_EXAMPLES
 
-// #define NO_GGWP
+#define NO_GGWP
 
 // contract_def.h needs to be included first to make sure that contracts have minimal access
 #include "contract_core/contract_def.h"
@@ -9405,8 +9405,16 @@ void processArgs(int argc, const char* argv[]) {
         ("s,security-tick", "Core will verify state after x tick, to reduce computational to the node", cxxopts::value<int>()->default_value("1"))
         ("http-port", "Port for the built-in HTTP/RPC server to listen on", cxxopts::value<int>()->default_value("41841"))
         ("static-peers", "Run in static peer mode: do not add/remove peers, do not churn 25% of non-fullnode peers every 2 minutes, do not accept new incoming connections. Useful for nodes far from the network's center of mass where the default churn drops good peers before they're classified as fullnodes.")
+        ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
         ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"));
     auto result = options.parse(argc, argv);
+
+#ifdef __linux__
+    if (result.count("swap-compression")) {
+        gSwapCompressionEnabled = true;
+        logColorToScreen("INFO", "Swap compression enabled: SwapVM disk pages will be compressed with blosc2 on save/load");
+    }
+#endif
 
     if (result.count("peers")) {
         std::string peersStr = result["peers"].as<std::string>();
