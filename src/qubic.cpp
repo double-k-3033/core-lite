@@ -5998,8 +5998,8 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
 
                         // A good solution re-adds the return; preserve its tick so a later same-source undo can't reset it.
                         // Re-resolve the index: the good-path increaseEnergy may have triggered reorganizeSpectrum().
-                        ACQUIRE(spectrumLock);
                         const int spectrumIndexAfter = ::spectrumIndex(transaction->sourcePublicKey);
+                        ACQUIRE(spectrumLock);
                         if (spectrumIndexAfter >= 0
                             && spectrum[spectrumIndexAfter].numberOfIncomingTransfers != backupNumberOfIncomingTransfers)
                         {
