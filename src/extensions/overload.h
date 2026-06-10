@@ -871,7 +871,9 @@ struct Overload {
 				    pfd.events = POLLIN | POLLERR | POLLHUP;
 				    int ret = poll(&pfd, 1, 0);
 #endif
-                    if (ret > 0 && (pfd.revents & (POLLERR | POLLHUP))) {
+                    // On POLLHUP with data still readable, stay Established so recv() drains it first (clean close on EOF).
+                    const bool closed = (pfd.revents & POLLERR) || ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN));
+                    if (ret > 0 && closed) {
                         *Tcp4State = Tcp4StateClosed;
                         tcpData.connectStatus = ConnectStatus::Error;
                     }
@@ -1072,7 +1074,7 @@ struct Overload {
             auto now = std::chrono::system_clock::now();
             long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
             if (ms - latestConnectTimestampMap[ipInNumber] < 2'000) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5'000));
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             tcpData->connectStatus = ConnectStatus::Connecting;
             if (connect(tcpData->socket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
@@ -1102,14 +1104,13 @@ struct Overload {
             TransmitRequest request = transmitQueue.pop();
             int totalSentBytes = 0;
             auto& fragment = request.token->Packet.TxData->FragmentTable[0];
-            auto startTime = std::chrono::high_resolution_clock::now();
-            auto endTime = std::chrono::high_resolution_clock::now();
-            unsigned long long totalNanoseconds = 0;
+            // Abort a send only after 5s of zero progress (not total time) so big transfers aren't cut mid-stream.
+            constexpr unsigned long long NO_PROGRESS_TIMEOUT_NS = 5'000'000'000ULL;
+            auto lastProgress = std::chrono::high_resolution_clock::now();
             while ((unsigned int)totalSentBytes < fragment.FragmentLength)
             {
-                endTime = std::chrono::high_resolution_clock::now();
-                totalNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
-                if (totalNanoseconds > 1'000'000'000) { // 1 seconds timeout
+                auto now = std::chrono::high_resolution_clock::now();
+                if ((unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now - lastProgress).count() > NO_PROGRESS_TIMEOUT_NS) {
                     request.token->CompletionToken.Status = EFI_TIMEOUT;
                     break;
                 }
@@ -1117,6 +1118,7 @@ struct Overload {
                 if (n > 0)
                 {
                     totalSentBytes += n;
+                    lastProgress = now;
                 } else if (n == 0)
                 {
                     // connection closed

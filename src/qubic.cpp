@@ -509,6 +509,8 @@ void logToConsole(const CHAR16* message)
 #endif
 }
 
+#include "extensions/missing_tx_debug.h"
+
 
 static inline bool isMainMode()
 {
@@ -960,6 +962,9 @@ static void processBroadcastTick(Peer* peer, RequestResponseHeader* header)
 
 #include "optimizations/opt_config.h"
 #include "optimizations/opt_eager_tx_fetch.h"
+#include "extensions/fast_tx_window.h"
+
+static FastTxWindow fastTxWindow;
 
 static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* header)
 {
@@ -1027,6 +1032,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                 addDebugMessage(dbgMsg1);
 #endif
 
+                bool accepted = false;
                 ts.tickData.acquireLock();
                 TickData& td = ts.tickData.getByTickInCurrentEpoch(request->tickData.tick);
                 if (td.epoch != INVALIDATED_TICK_DATA)
@@ -1042,6 +1048,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                                 copyMem(&td, &request->tickData, sizeof(TickData));
                                 peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
                                 peer->peerReportedTick = max(peer->peerReportedTick, request->tickData.tick);
+                                accepted = true;
 
                                 if (memcmp(&td, &request->tickData, sizeof(TickData)) != 0)
                                 {
@@ -1087,6 +1094,7 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                             copyMem(&td, &request->tickData, sizeof(TickData));
                             peer->lastActiveTick = max(peer->lastActiveTick, peer->getDejavuTick(header->dejavu()));
                             peer->peerReportedTick = max(peer->peerReportedTick, request->tickData.tick);
+                            accepted = true;
 
 #if USE_EAGER_TX_FETCH
                             ts.tickData.releaseLock();
@@ -1097,6 +1105,8 @@ static void processBroadcastFutureTickData(Peer* peer, RequestResponseHeader* he
                     }
                 }
                 ts.tickData.releaseLock();
+                if (accepted)
+                    TxSlotIndex::build(request->tickData.tick, request->tickData.transactionDigests);
             }
         }
     }
@@ -1106,6 +1116,7 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
 {
     Transaction* request = header->getPayload<Transaction>();
     const unsigned int transactionSize = request->totalSize();
+    TxStats::onReceive();
 
 #if !defined(NDEBUG) && 1
     // TODO: remove this debug code when the OM pipeline is fully stable
@@ -1126,12 +1137,21 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
 #if !defined(NDEBUG) && 1
             appendText(dbgMsg, L" verified");
 #endif
+            TxStats::onValid(request->tick);
             if (header->isDejavuZero())
             {
                 enqueueResponse(NULL, header);
             }
 
-            pendingTxsPool.add(request);
+            if (isMainMode())
+                pendingTxsPool.add(request, true);
+            else
+            {
+                if (!fastTxWindow.add(request, system.tick))
+                {
+                    return;
+                }
+            }
 
             unsigned int tickIndex = ts.tickToIndexCurrentEpoch(request->tick);
             ts.tickData.acquireLock();
@@ -1140,24 +1160,35 @@ static void processBroadcastTransaction(Peer* peer, RequestResponseHeader* heade
             {
                 KangarooTwelve(request, transactionSize, digest, sizeof(digest));
                 auto* tsReqTickTransactionOffsets = ts.tickTransactionOffsets.getByTickIndex(tickIndex);
-                for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
+                int mtxSlot = TxSlotIndex::lookup(request->tick, *(const m256i*)digest);
+                bool mtxStored = false, mtxFull = false;
+                if (mtxSlot == -2) // index not built yet: linear fallback keeps result correct
                 {
-                    if (digest == ts.tickData[tickIndex].transactionDigests[i])
+                    for (unsigned int i = 0; i < NUMBER_OF_TRANSACTIONS_PER_TICK; i++)
                     {
-                        ts.tickTransactions.acquireLock();
-                        if (!tsReqTickTransactionOffsets[i])
-                        {
-                            if (ts.nextTickTransactionOffset + transactionSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
-                            {
-                                tsReqTickTransactionOffsets[i] = ts.nextTickTransactionOffset;
-                                copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), request, transactionSize);
-                                ts.nextTickTransactionOffset += transactionSize;
-                            }
-                        }
-                        ts.tickTransactions.releaseLock();
-                        break;
+                        if (digest == ts.tickData[tickIndex].transactionDigests[i]) { mtxSlot = (int)i; break; }
                     }
                 }
+                if (mtxSlot >= 0)
+                {
+                    unsigned int i = (unsigned int)mtxSlot;
+                    ts.tickTransactions.acquireLock();
+                    const bool mtxWasEmpty = !tsReqTickTransactionOffsets[i];
+                    if (!tsReqTickTransactionOffsets[i])
+                    {
+                        if (ts.nextTickTransactionOffset + transactionSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
+                        {
+                            tsReqTickTransactionOffsets[i] = ts.nextTickTransactionOffset;
+                            copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), request, transactionSize);
+                            ts.nextTickTransactionOffset += transactionSize;
+                        }
+                    }
+                    ts.tickTransactions.releaseLock();
+                    mtxStored = mtxWasEmpty && tsReqTickTransactionOffsets[i];
+                    mtxFull = mtxWasEmpty && !tsReqTickTransactionOffsets[i];
+                }
+                // missingTxDebug_onBroadcast(request->tick, *(const m256i*)digest, mtxSlot, mtxStored, mtxFull);
+                if (mtxStored) TxStats::onStored(request->tick);
             }
             ts.tickData.releaseLock();
 
@@ -3249,6 +3280,7 @@ static bool makeAndBroadcastExecutionFeeTransaction(int i, BroadcastFutureTickDa
 static void processTick(unsigned long long processorNumber)
 {
     PROFILE_SCOPE();
+    TickBench::Scope _btTotal(TickBench::TICK_TOTAL);
 
 #ifdef TESTNET
     if (tickDelay > 0) {
@@ -3319,10 +3351,12 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): BEGIN_TICK");
+    unsigned long long _btBeginTickStart = __rdtsc();
     logger.registerNewTx(system.tick, logger.SC_BEGIN_TICK_TX);
     contractProcessorPhase = BEGIN_TICK;
     contractProcessorState = 1;
     WAIT_WHILE(contractProcessorState);
+    TickBench::add(TickBench::BEGIN_TICK, _btBeginTickStart, __rdtsc());
     PROFILE_SCOPE_END();
 
     latestIncomingTransferTickPreservePubkeys.clear();
@@ -3343,6 +3377,7 @@ static void processTick(unsigned long long processorNumber)
         // Only apply skipping compute solution when in Mainnet with Aux node (except for last tick)
         if (isMainMode() || isTestnet() || isLastTickInEpoch()) {
             PROFILE_NAMED_SCOPE_BEGIN("processTick(): pre-scan solutions");
+            unsigned long long _bPrescanStart = __rdtsc();
             // reset solution task queue
             score->resetTaskQueue();
             // pre-scan any solution tx and add them to solution task queue
@@ -3379,11 +3414,13 @@ static void processTick(unsigned long long processorNumber)
                 }
             }
 
+            TickBench::add(TickBench::PRESCAN_SOLUTIONS, _bPrescanStart, __rdtsc());
             PROFILE_SCOPE_END();
             {
                 // Process solutions in this tick and store in cache. In parallel, score->tryProcessSolution() is called by
                 // request processors to speed up solution processing.
                 PROFILE_NAMED_SCOPE("processTick(): process solutions");
+                TickBench::Scope _bProcSol(TickBench::PROCESS_SOLUTIONS);
                 score->startProcessTaskQueue();
                 while (!score->isTaskQueueProcessed()) {
                     score->tryProcessSolution(processorNumber);
@@ -3403,6 +3440,7 @@ static void processTick(unsigned long long processorNumber)
 
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
+        unsigned long long _bProcTxsStart = __rdtsc();
         unsigned int nTickLeaderTx = 0;
         unsigned int nProtocolTx = 0;
         unsigned int nContractTx = 0;
@@ -3569,6 +3607,7 @@ static void processTick(unsigned long long processorNumber)
                 revenueOnTick(tickOffset, gTxObservation);
             }
         }
+        TickBench::add(TickBench::PROCESS_TXS, _bProcTxsStart, __rdtsc());
         PROFILE_SCOPE_END();
     }
     else
@@ -3632,10 +3671,13 @@ static void processTick(unsigned long long processorNumber)
     }
 
     // Generate subscription queries (may create queries that immediately timeout if the network was stuck)
-    oracleEngine.generateSubscriptionQueries();
+    {
+        TickBench::Scope _bOracle(TickBench::ORACLE);
+        oracleEngine.generateSubscriptionQueries();
 
-    // Check for oracle query timeouts (may schedule notification)
-    oracleEngine.processTimeouts();
+        // Check for oracle query timeouts (may schedule notification)
+        oracleEngine.processTimeouts();
+    }
 
     // Notify contracts about successfully obtained oracle replies and about errors (using contract processor)
     const OracleNotificationData* oracleNotification = oracleEngine.getNotification();
@@ -3758,13 +3800,16 @@ static void processTick(unsigned long long processorNumber)
     }
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): END_TICK");
+    unsigned long long _bEndTickStart = __rdtsc();
     logger.registerNewTx(system.tick, logger.SC_END_TICK_TX);
     contractProcessorPhase = END_TICK;
     contractProcessorState = 1;
     WAIT_WHILE(contractProcessorState);
+    TickBench::add(TickBench::END_TICK, _bEndTickStart, __rdtsc());
     PROFILE_SCOPE_END();
 
     PROFILE_NAMED_SCOPE_BEGIN("processTick(): get spectrum digest");
+    unsigned long long _bDigSpecStart = __rdtsc();
     unsigned int digestIndex;
     ACQUIRE(spectrumLock);
     for (digestIndex = 0; digestIndex < SPECTRUM_CAPACITY; digestIndex++)
@@ -3796,13 +3841,17 @@ static void processTick(unsigned long long processorNumber)
 
     etalonTick.saltedSpectrumDigest = spectrumDigests[(SPECTRUM_CAPACITY * 2 - 1) - 1];
     RELEASE(spectrumLock);
+    TickBench::add(TickBench::DIGEST_SPECTRUM, _bDigSpecStart, __rdtsc());
     PROFILE_SCOPE_END();
 
-    getUniverseDigest(etalonTick.saltedUniverseDigest);
-
-    if (isMainMode() || isSystemAtSecurityTick() || isNextTickIsSecurityTick() || isLastTickInEpoch() || isThereQearnTx)
     {
-        getComputerDigest(etalonTick.saltedComputerDigest);
+        TickBench::Scope _bDigUC(TickBench::DIGEST_UNIVERSE_COMPUTER);
+        getUniverseDigest(etalonTick.saltedUniverseDigest);
+
+        if (isMainMode() || isSystemAtSecurityTick() || isNextTickIsSecurityTick() || isLastTickInEpoch() || isThereQearnTx)
+        {
+            getComputerDigest(etalonTick.saltedComputerDigest);
+        }
     }
 
 #if !defined(NDEBUG) && 1
@@ -5406,6 +5455,31 @@ static void prepareNextTickTransactions()
     {
         // Checks if any of the missing transactions is available in the pending transaction pool and remove unknownTransaction flag if found
 
+        if (!isMainMode())
+        {
+            // AUX: resolve still-unknown next-tick txs from the fast window, O(1) per slot.
+            for (unsigned int j = 0; j < NUMBER_OF_TRANSACTIONS_PER_TICK; j++)
+            {
+                if (!(unknownTransactions[j >> 6] & (1ULL << (j & 63))))
+                    continue;
+                const Transaction* fwTx = fastTxWindow.lookup(nextTick, nextTickData.transactionDigests[j], system.tick);
+                if (!fwTx)
+                    continue;
+                auto* fwOffsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(nextTick);
+                const unsigned int fwSize = fwTx->totalSize();
+                ts.tickTransactions.acquireLock();
+                if (ts.nextTickTransactionOffset + fwSize <= ts.tickTransactions.storageSpaceCurrentEpoch)
+                {
+                    fwOffsets[j] = ts.nextTickTransactionOffset;
+                    copyMem(ts.tickTransactions(ts.nextTickTransactionOffset), (void*)fwTx, fwSize);
+                    ts.nextTickTransactionOffset += fwSize;
+                    numberOfKnownNextTickTransactions++;
+                }
+                ts.tickTransactions.releaseLock();
+                unknownTransactions[j >> 6] &= ~(1ULL << (j & 63));
+            }
+        }
+        else {
         unsigned int numPendingTickTxs = pendingTxsPool.getNumberOfPendingTickTxs(nextTick);
         pendingTxsPool.acquireLock();
         for (unsigned int i = 0; i < numPendingTickTxs; ++i)
@@ -5454,6 +5528,7 @@ static void prepareNextTickTransactions()
             }
         }
         pendingTxsPool.releaseLock();
+        }
 
         // At this point unknownTransactions is set to 1 for all transactions that are unknown
         // Update requestedTickTransactions the list of txs that not exist in memory so the MAIN loop can try to fetch them from peers
@@ -5476,6 +5551,9 @@ static void prepareNextTickTransactions()
             }
         }
     }
+
+    // missingTxDebug_reportMissingSet(nextTick, unknownTransactions);
+
     nextTickTransactionsSemaphore = 0;
 }
 
@@ -7164,6 +7242,9 @@ static bool initialize()
         if (!pendingTxsPool.init())
             return false;
 
+        if (!fastTxWindow.init())
+            return false;
+
         setMem(spectrumChangeFlags, sizeof(spectrumChangeFlags), 0);
 
         if (!initSpectrum())
@@ -7623,6 +7704,8 @@ static void deinitialize()
     ts.deinit();
 
     pendingTxsPool.deinit();
+
+    fastTxWindow.deinit();
 
     if (score)
     {
@@ -9406,7 +9489,8 @@ void processArgs(int argc, const char* argv[]) {
         ("http-port", "Port for the built-in HTTP/RPC server to listen on", cxxopts::value<int>()->default_value("41841"))
         ("static-peers", "Run in static peer mode: do not add/remove peers, do not churn 25% of non-fullnode peers every 2 minutes, do not accept new incoming connections. Useful for nodes far from the network's center of mass where the default churn drops good peers before they're classified as fullnodes.")
         ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
-        ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"));
+        ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"))
+        ("max-inbound", "Max number of inbound connection slots that may accept. Lower during catch-up to stop serving inbound peers (0 = reject all inbound, like static). Default = all incoming slots.", cxxopts::value<int>()->default_value("-1"));
     auto result = options.parse(argc, argv);
 
 #ifdef __linux__
@@ -9466,6 +9550,13 @@ void processArgs(int argc, const char* argv[]) {
         logColorToScreen("INFO", "Security tick set to " + std::to_string(securityTick));
     }
 
+    {
+        int mi = result["max-inbound"].as<int>();
+        if (mi >= 0) {
+            maxInboundAccepts = mi > NUMBER_OF_INCOMING_CONNECTIONS ? NUMBER_OF_INCOMING_CONNECTIONS : mi;
+            logColorToScreen("INFO", "Max inbound accepts capped at " + std::to_string(maxInboundAccepts));
+        }
+    }
     if (result.count("auto-flush-stuck-seconds")) {
         autoFlushStuckSeconds = result["auto-flush-stuck-seconds"].as<int>();
         if (autoFlushStuckSeconds < 0) autoFlushStuckSeconds = 0;
