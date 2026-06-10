@@ -235,7 +235,7 @@ static volatile bool systemMustBeSaved = false, spectrumMustBeSaved = false, uni
 
 static int misalignedState = 0;
 
-static bool forceVerifySolutions = false;
+static bool forceVerifySolutions = true;
 static bool forceBroadcastInvalidSolution = false;
 
 static volatile unsigned char epochTransitionState = 0;
