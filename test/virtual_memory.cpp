@@ -275,6 +275,7 @@ TEST(TestSwapVirtualMemory, TestSwapVirtualMemory_IndexModeRandomAccess) {
     }
 
     for (int i = 0; i < 1024 * 128 * 64; i++) {
+        PinScope _pinScope; // release this iteration's page pin (no work-unit boundary in tests)
         auto randomRange = m256i::randomValue().m256i_u64[0] % (1024*128*64);
         if (randomRange != 1 && randomRange != 1000 && randomRange != 1'000'000) {
             TxHashMapEntry& entry = test_vm.getRef(randomRange);
@@ -314,6 +315,7 @@ TEST(TestSwapVirtualMemory, TestSwapVirtualMemory_IndexModeLinearAccess) {
     test_vm.init();
 
     for (unsigned long long i = 0; i < 1024 * 128 * 64; i++) {
+        PinScope _pinScope; // release this iteration's page pin (no work-unit boundary in tests)
         TxHashMapEntry& entry = test_vm.getRef(i);
         entry.digest = m256i::zero();
         entry.digest.m256i_u64[0] = i;
@@ -321,6 +323,7 @@ TEST(TestSwapVirtualMemory, TestSwapVirtualMemory_IndexModeLinearAccess) {
     }
 
     for (unsigned long long i = 0; i < 1024 * 128 * 64; i++) {
+        PinScope _pinScope; // release this iteration's page pin (no work-unit boundary in tests)
         TxHashMapEntry& entry = test_vm.getRef(i);
         EXPECT_TRUE(entry.digest.m256i_u64[0] == i);
         EXPECT_TRUE(entry.offset == i);
