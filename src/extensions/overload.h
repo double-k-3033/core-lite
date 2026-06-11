@@ -155,6 +155,8 @@ bool isNextTickIsSecurityTick()
 ////////// Skip Solution Transaction Verification Feature \\\\\\\\\\
 
 static inline EntityRecord spectrumDataRollback[NUMBER_OF_TRANSACTIONS_PER_TICK];
+static inline bool gSolutionTxPaid[NUMBER_OF_TRANSACTIONS_PER_TICK];     // optimistic decreaseEnergy succeeded for the solution tx at this index
+static inline bool gSolutionTxReturned[NUMBER_OF_TRANSACTIONS_PER_TICK]; // optimistic deposit-return increaseEnergy applied for the solution tx at this index
 unsigned int resourceTestingDigestRollback = 0;
 
 uint32_t getCurrentCpuIndex() {

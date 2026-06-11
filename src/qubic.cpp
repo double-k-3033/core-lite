@@ -323,6 +323,7 @@ static volatile unsigned int minerScores[MAX_NUMBER_OF_MINERS + 1];
 static volatile m256i minerPublicKeysRollback[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int minerScoresRollback[MAX_NUMBER_OF_MINERS + 1];
 static volatile unsigned int numberOfMiners = NUMBER_OF_COMPUTORS;
+static unsigned int numberOfMinersRollback = NUMBER_OF_COMPUTORS;
 static m256i competitorPublicKeys[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static unsigned int competitorScores[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
 static bool competitorComputorStatuses[(NUMBER_OF_COMPUTORS - QUORUM) * 2];
@@ -2713,6 +2714,7 @@ static void processTickTransactionSolution(const MiningSolutionTransaction* tran
 
                     if (!isRevalidation)
                     {
+                        gSolutionTxReturned[transactionIndex] = true; // deposit return applied; for reprocess undo
                         const QuTransfer quTransfer = { m256i::zero(), transaction->sourcePublicKey, transaction->amount };
                         logger.logQuTransfer(quTransfer);
                     }
@@ -3008,6 +3010,7 @@ static void processTickTransaction(const Transaction* transaction, unsigned int 
 
                 case MiningSolutionTransaction::transactionType():
                 {
+                    gSolutionTxPaid[transactionIndex] = true; // deposit paid; reaching here means decreaseEnergy succeeded
                     if (transaction->amount >= MiningSolutionTransaction::minAmount()
                         && transaction->inputSize >= MiningSolutionTransaction::minInputSize())
                     {
@@ -3447,10 +3450,13 @@ static void processTick(unsigned long long processorNumber)
 
         // Setup spectrum rollback data
         setMem(spectrumDataRollback, sizeof(spectrumDataRollback), 0);
+        setMem(gSolutionTxPaid, sizeof(gSolutionTxPaid), 0);
+        setMem(gSolutionTxReturned, sizeof(gSolutionTxReturned), 0);
         resourceTestingDigestRollback = resourceTestingDigest;
 
         copyMem((void*)minerPublicKeysRollback, (void*)minerPublicKeys, sizeof(minerPublicKeys));
         copyMem((void*)minerScoresRollback, (void*)minerScores, sizeof(minerScores));
+        numberOfMinersRollback = numberOfMiners;
 
         // Process all transaction of the tick
         PROFILE_NAMED_SCOPE_BEGIN("processTick(): process transactions");
@@ -5880,6 +5886,7 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
     // first rollback the miner scores data
     copyMem((void*)minerPublicKeys, (void*)minerPublicKeysRollback, sizeof(minerPublicKeysRollback));
     copyMem((void*)minerScores, (void*)minerScoresRollback, sizeof(minerScoresRollback));
+    numberOfMiners = numberOfMinersRollback;
 
     auto tsCurrentTickTransactionOffsets = ts.tickTransactionOffsets.getByTickInCurrentEpoch(system.tick);
 
@@ -5968,22 +5975,40 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
                         appendText(message, nonceChars);
                         logToConsole(message);
 
-                        // First, revert the spectrum changes made by this transaction
+                        // Undo this solution tx's optimistic deposit payment and return, then replay the balance-gated path.
                         ACQUIRE(spectrumLock);
-                        spectrum[spectrumIndex].incomingAmount -= transaction->amount;
-                        spectrum[spectrumIndex].numberOfIncomingTransfers--;
+                        if (gSolutionTxReturned[transactionIndex]) // optimistic deposit return existed
+                        {
+                            spectrum[spectrumIndex].incomingAmount -= transaction->amount;
+                            spectrum[spectrumIndex].numberOfIncomingTransfers--;
+                            spectrumInfo.totalAmount -= transaction->amount;
+                        }
+                        if (gSolutionTxPaid[transactionIndex]) // optimistic deposit payment existed
+                        {
+                            spectrum[spectrumIndex].outgoingAmount -= transaction->amount;
+                            spectrum[spectrumIndex].numberOfOutgoingTransfers--;
+                            spectrumInfo.totalAmount += transaction->amount;
+                        }
                         spectrum[spectrumIndex].latestIncomingTransferTick = spectrumDataRollback[transactionIndex].latestIncomingTransferTick;
-
-                        spectrumInfo.totalAmount -= transaction->amount;
                         auto backupNumberOfIncomingTransfers = spectrum[spectrumIndex].numberOfIncomingTransfers;
                         RELEASE(spectrumLock);
 
-                        // Then, process the transaction again
-                        processTickTransactionSolution((MiningSolutionTransaction*)transaction, transactionIndex, processorNumber, true);
+                        // Replay deposit payment (balance-gated) then re-score; mirrors the solution branch of processTickTransaction().
+                        if (decreaseEnergy(spectrumIndex, transaction->amount))
+                        {
+                            // Skip dedup re-submissions (minerSolutionFlags set in a prior tick) -> stay burned, no return.
+                            if (gSolutionTxReturned[transactionIndex])
+                            {
+                                processTickTransactionSolution((MiningSolutionTransaction*)transaction, transactionIndex, processorNumber, true);
+                            }
+                        }
 
-                        // if the numberOfIncomingTransfers after != previous (correct sol) -> we need to preserve latestIncomingTransferTick to avoid later incorrect sol reset it.
+                        // A good solution re-adds the return; preserve its tick so a later same-source undo can't reset it.
+                        // Re-resolve the index: the good-path increaseEnergy may have triggered reorganizeSpectrum().
+                        const int spectrumIndexAfter = ::spectrumIndex(transaction->sourcePublicKey);
                         ACQUIRE(spectrumLock);
-                        if (spectrum[spectrumIndex].numberOfIncomingTransfers != backupNumberOfIncomingTransfers)
+                        if (spectrumIndexAfter >= 0
+                            && spectrum[spectrumIndexAfter].numberOfIncomingTransfers != backupNumberOfIncomingTransfers)
                         {
                             latestIncomingTransferTickPreservePubkeys.push_back(transaction->sourcePublicKey);
                         }
