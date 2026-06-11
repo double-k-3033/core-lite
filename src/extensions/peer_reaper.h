@@ -22,10 +22,21 @@ static unsigned long long sConnStartTsc[NUMBER_OF_OUTGOING_CONNECTIONS]; // risi
 static unsigned long long sLastRxBytes[NUMBER_OF_OUTGOING_CONNECTIONS];  // last observed gSlotRxBytes
 static unsigned long long sRxProgressTsc[NUMBER_OF_OUTGOING_CONNECTIONS];// when rx last advanced
 
+// True if the IP came from CLI --peers; keep these in the pool so a false positive cannot evict our bootstrap set.
+static bool isCliSeedPeer(const IPv4Address& address)
+{
+    for (unsigned int k = 0; k < knownPublicPeersDynamic.size(); k++)
+        if (knownPublicPeersDynamic[k] == address)
+            return true;
+    return false;
+}
+
 // Drop a dead peer and let the redial pick a new one.
 static void reap(unsigned int i, unsigned int discReason)
 {
-    forgetPublicPeer(peers[i].address);   // before close: close resets address; self-guards floor + seeds/static
+    // forgetPublicPeer already spares baked-in seeds and keeps the >=10 floor; also spare CLI --peers here.
+    if (!isCliSeedPeer(peers[i].address))
+        forgetPublicPeer(peers[i].address);   // before close: close resets address
     closePeer(&peers[i], 0, discReason);  // 0 retries, matches churn/OM-timeout closes; records discReason
     logToConsole(discReason == PeerDisc::ZOMBIE_CONNECT
         ? L"Reaped dead outgoing peer (connect timeout)"
