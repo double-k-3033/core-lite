@@ -5993,7 +5993,11 @@ void reprocessSolutionTransaction(unsigned long long processorNumber)
                         // Replay deposit payment (balance-gated) then re-score; mirrors the solution branch of processTickTransaction().
                         if (decreaseEnergy(spectrumIndex, transaction->amount))
                         {
-                            processTickTransactionSolution((MiningSolutionTransaction*)transaction, transactionIndex, processorNumber, true);
+                            // Skip dedup re-submissions (minerSolutionFlags set in a prior tick) -> stay burned, no return.
+                            if (gSolutionTxReturned[transactionIndex])
+                            {
+                                processTickTransactionSolution((MiningSolutionTransaction*)transaction, transactionIndex, processorNumber, true);
+                            }
                         }
 
                         // A good solution re-adds the return; preserve its tick so a later same-source undo can't reset it.
