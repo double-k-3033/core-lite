@@ -13,7 +13,7 @@ namespace PeerReaper
 {
 // Per-reason reap totals are exposed at rpc/stats via PeerDisc (closePeer records the reason).
 static volatile bool gEnabled = true;                            // runtime kill-switch
-static constexpr unsigned long long CONNECT_TIMEOUT_SECS = 10;   // stuck connecting -> reap
+static constexpr unsigned long long CONNECT_TIMEOUT_SECS = 5;   // stuck connecting -> reap
 static constexpr unsigned long long RX_STALL_SECS = 10;          // established, no rx -> reap
 
 // Reaper-side per-slot state; no core fields added. Zero-initialized (static storage).
