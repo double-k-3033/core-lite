@@ -509,6 +509,7 @@ void logToConsole(const CHAR16* message)
 }
 
 #include "extensions/missing_tx_debug.h"
+#include "extensions/peer_reaper.h"
 
 
 static inline bool isMainMode()
@@ -9019,6 +9020,11 @@ EFI_STATUS efi_main(EFI_HANDLE imageHandle, EFI_SYSTEM_TABLE* systemTable)
                         {
                             closePeer(&peers[i], ORACLE_MACHINE_GRACEFULL_CLOSE_RETIRES);
                         }
+                    }
+                    else
+                    {
+                        // reap dead/zombie regular-outgoing peers (incoming slots no-op inside)
+                        PeerReaper::checkSlot(i, frequency);
                     }
 
                 }
