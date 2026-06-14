@@ -986,6 +986,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
                         RequestResponseHeader* requestResponseHeader = (RequestResponseHeader*)((char*)peers[i].receiveBuffer + readOffset);
                         if (requestResponseHeader->size() < sizeof(RequestResponseHeader))
                         {
+                            // TODO: remove this tolerate on epoch 218
                             // TOLERATE TRAILING ZERO PADDING: other nodes run old buggy code that
                             // can append zero bytes past their real messages. A valid frame never
                             // starts with a zero size field (min message size is
