@@ -41,10 +41,13 @@ jobs:
       # Configure the project with AVX-512 enabled
       - name: Configure with CMake
         run: |
+          # NOTE: BUILD_TESTS is OFF on purpose. GitHub runners do not support
+          # AVX-512, and CMake's gtest_discover_tests runs the test binary at
+          # build time, which would SIGILL (Illegal instruction) here.
           cmake -S . -B ${{ inputs.build_dir || 'build' }} \
             -DCMAKE_BUILD_TYPE=${{ inputs.configuration || 'RelWithDebInfo' }} \
             -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DBUILD_TESTS:BOOL=ON \
+            -DBUILD_TESTS:BOOL=OFF \
             -DBUILD_BINARY:BOOL=ON \
             -DENABLE_AVX512=1 \
             -DUSE_SANITIZER=OFF \
