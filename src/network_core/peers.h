@@ -782,10 +782,6 @@ static void penalizePublicPeerRejectedConnection(const IPv4Address& address)
 
 static void addPublicPeer(const IPv4Address& address)
 {
-    if (address.u8[0] == 127) // never dial loopback: same-port loopback is always self-connect
-    {
-        return;
-    }
     if (isBogonAddress(address)) // not add bogon ip
     {
         return;
