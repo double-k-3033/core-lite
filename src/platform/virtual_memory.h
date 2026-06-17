@@ -55,34 +55,38 @@ struct ThreadPinArena
 {
     static constexpr int CAP = 512; // >> total cache slots across all swap VMs
     void* vm[CAP];
-    void (*unpin[CAP])(void*, int);
+    void (*unpin[CAP])(void*, int, unsigned long long);
     int slot[CAP];
+    unsigned long long gen[CAP]; // VM generation when this pin was taken; stale across reset()
     int count = 0;
 
-    // Already pinned by this thread? (so repeated access to the same page is a no-op)
-    bool contains(void* v, int s) const
+    // Already pinned by this thread in the current generation? (repeated access to the same page
+    // is a no-op). Entries from an older generation never match — reset() bumped the generation,
+    // so a stale note must not suppress a fresh pin.
+    bool contains(void* v, int s, unsigned long long g) const
     {
         for (int i = 0; i < count; i++)
-            if (vm[i] == v && slot[i] == s)
+            if (vm[i] == v && slot[i] == s && gen[i] == g)
                 return true;
         return false;
     }
-    void add(void* v, void (*u)(void*, int), int s)
+    void add(void* v, void (*u)(void*, int, unsigned long long), int s, unsigned long long g)
     {
         if (count < CAP)
         {
-            vm[count] = v; unpin[count] = u; slot[count] = s; count++;
+            vm[count] = v; unpin[count] = u; slot[count] = s; gen[count] = g; count++;
         }
         // If CAP is ever exceeded the access still proceeds; the page just isn't pinned. CAP is
         // sized far above the total number of cache slots so this cannot happen in practice.
     }
-    // Release pins added since `savepoint` (default: all of this thread's pins).
+    // Release pins added since `savepoint` (default: all of this thread's pins). The unpin thunk
+    // checks the generation, so notes left stale by a reset() are dropped harmlessly.
     void releaseDownTo(int savepoint)
     {
         while (count > savepoint)
         {
             --count;
-            unpin[count](vm[count], slot[count]);
+            unpin[count](vm[count], slot[count], gen[count]);
         }
     }
 };
@@ -794,11 +798,15 @@ private:
     unsigned long long cacheHits = 0;       // page accesses served from cache
     unsigned long long cacheMisses = 0;     // page accesses that loaded from disk
 
+    // Bumped by reset() (under memLock). Pins recorded under an older generation are invalid —
+    // their cache slot was wiped/reallocated — so the unpin and the dedup check ignore them.
+    unsigned long long generation = 0;
+
     // Pin/unpin a slot for the current thread (caller holds memLock). Idempotent per thread:
     // a second access to a slot this thread already pinned is a no-op (dedup via the arena).
     void pinSlotForThread(int slot)
     {
-        if (tlPinArena.contains(this, slot))
+        if (tlPinArena.contains(this, slot, generation))
             return;
         if (pinCount[slot]++ == 0)
         {
@@ -806,21 +814,23 @@ private:
             if (pinnedNow > pinnedHighWater)
                 pinnedHighWater = pinnedNow;
         }
-        tlPinArena.add(this, &SwapVirtualMemory::unpinThunk, slot);
+        tlPinArena.add(this, &SwapVirtualMemory::unpinThunk, slot, generation);
     }
-    void unpinSlotInternal(int slot)
+    void unpinSlotInternal(int slot, unsigned long long gen)
     {
         ACQUIRE(memLock);
-        if (slot >= 0 && slot <= (int)numCachePage && pinCount[slot] > 0)
+        // gen != generation => this pin predates a reset(); the slot was already cleared, so
+        // decrementing now would corrupt a fresh pin. Drop it.
+        if (gen == generation && slot >= 0 && slot <= (int)numCachePage && pinCount[slot] > 0)
         {
             if (--pinCount[slot] == 0)
                 pinnedNow--;
         }
         RELEASE(memLock);
     }
-    static void unpinThunk(void* self, int slot)
+    static void unpinThunk(void* self, int slot, unsigned long long gen)
     {
-        ((SwapVirtualMemory*)self)->unpinSlotInternal(slot);
+        ((SwapVirtualMemory*)self)->unpinSlotInternal(slot, gen);
     }
 
     // used for offset mode
@@ -1080,9 +1090,16 @@ public:
     }
 
     void reset() {
-        VMBase::reset();
+        // Invalidate all pin bookkeeping atomically w.r.t. concurrent pinners. Bumping the
+        // generation here is what makes other threads' stale pin notes (e.g. HTTP request
+        // threads that pinned tickData and aren't drained at this point) harmless: their later
+        // release sees gen != generation and is dropped, instead of mis-decrementing a fresh pin.
+        ACQUIRE(memLock);
+        generation++;
         setMem(pinCount, sizeof(pinCount), 0);
         pinnedNow = 0; // cumulative stats (hits/misses/highWater/waits) are kept across resets
+        RELEASE(memLock);
+        VMBase::reset();
         setMem(isPageWrittenToDisk, isPageWrittenToDiskSize, 0);
         if (mode == SwapMode::OFFSET_MODE) {
             setMem(pageExtraBytesBuffer, pageExtraBytesBufferSize, 0);

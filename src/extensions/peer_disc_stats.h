@@ -18,12 +18,15 @@ enum Reason : unsigned int
     XMIT_INIT_FAIL,  // Transmit() returned error
     CONNECT_REJECT,  // outgoing connect rejected
     PROTO_VIOLATION, // bad header size -> forget peer
+    ZOMBIE_CONNECT,  // reaper: outgoing dial never reached ConnectedAccepted
+    ZOMBIE_RXSTALL,  // reaper: established outgoing peer stopped sending
     REASON_COUNT
 };
 
 static const char* const kName[REASON_COUNT] = {
     "other", "recvErr", "recvFinPoll", "recvInitFail",
-    "xmitErr", "xmitGetmode", "xmitInitFail", "connectReject", "protoViolation"
+    "xmitErr", "xmitGetmode", "xmitInitFail", "connectReject", "protoViolation",
+    "zombieConnect", "zombieRxStall"
 };
 
 static constexpr unsigned int MAX_SLOTS = 1024;
