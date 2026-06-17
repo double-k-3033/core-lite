@@ -3721,6 +3721,7 @@ static void processTick(unsigned long long processorNumber)
     const OracleQueryMetadata* finishedUserQuery = oracleEngine.getFinishedUserQuery();
     while (finishedUserQuery)
     {
+        PinScope _pinScope; // release this query's tickTransaction/txOffset swap-page pins each iteration
         if (finishedUserQuery->interfaceIndex == OI::DogeShareValidation::oracleInterfaceIndex)
         {
             // Look up query tx to get query data.
@@ -4415,9 +4416,11 @@ static void beginEpoch()
 static void endEpoch()
 {
     logger.registerNewTx(system.tick, logger.SC_END_EPOCH_TX);
+    logToConsole(L"endEpoch: [1/5] running contract END_EPOCH procedures...");
     contractProcessorPhase = END_EPOCH;
     contractProcessorState = 1;
     WAIT_WHILE(contractProcessorState);
+    logToConsole(L"endEpoch: [1/5] contract END_EPOCH procedures done");
 
     // treating endEpoch as a tick, start updating etalonTick:
     // this is the last tick of an epoch, should we set prevResourceTestingDigest to zero? nodes that start from scratch (for the new epoch)
@@ -4429,6 +4432,7 @@ static void endEpoch()
     etalonTick.prevTransactionBodyDigest = etalonTick.saltedTransactionBodyDigest;
 
     // Handle IPO
+    logToConsole(L"endEpoch: [2/5] finishing IPOs...");
     finishIPOs();
 
     system.initialMillisecond = etalonTick.millisecond;
@@ -4443,6 +4447,7 @@ static void endEpoch()
     // Only issue qus if the max supply is not yet reached
     if (spectrumInfo.totalAmount + ISSUANCE_RATE <= MAX_SUPPLY)
     {
+        logToConsole(L"endEpoch: [3/5] computing revenue (V2/multi-dim) + distributing to computors...");
 
         // Collect mining scores for V2
         for (unsigned int i = 0; i < NUMBER_OF_COMPUTORS; i++)
@@ -4526,6 +4531,7 @@ static void endEpoch()
     }
 
     // Reorganize spectrum hash map (also updates spectrumInfo)
+    logToConsole(L"endEpoch: [4/5] reorganizing spectrum hash map...");
     {
         ACQUIRE(spectrumLock);
 
@@ -4534,7 +4540,9 @@ static void endEpoch()
         RELEASE(spectrumLock);
     }
 
+    logToConsole(L"endEpoch: [5/5] reorganizing universe/assets...");
     assetsEndEpoch();
+    logToConsole(L"endEpoch: [5/5] universe/assets done");
     {
         // this is the last logging event of the epoch
         // a hint message for 3rd party services the end of the epoch
@@ -6870,12 +6878,25 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                                 bool isBeginEpoch = false;
                                 if (epochTransitionState == 1)
                                 {
+                                    {
+                                        CHAR16 etMsg[192];
+                                        setText(etMsg, L"=== EPOCH TRANSITION: start | epoch ");
+                                        appendNumber(etMsg, system.epoch, FALSE);
+                                        appendText(etMsg, L" -> ");
+                                        appendNumber(etMsg, system.epoch + 1, FALSE);
+                                        appendText(etMsg, L" | last tick of epoch ");
+                                        appendNumber(etMsg, system.tick - 1, FALSE);
+                                        logToConsole(etMsg);
+                                    }
 
                                     // wait until all request processors are in waiting state
+                                    logToConsole(L"EPOCH TRANSITION: waiting for request processors to park...");
                                     WAIT_WHILE(epochTransitionWaitingRequestProcessors < nRequestProcessorIDs);
 
                                     // end current epoch
+                                    logToConsole(L"EPOCH TRANSITION: running endEpoch() (revenue/IPO/spectrum reorg)...");
                                     endEpoch();
+                                    logToConsole(L"EPOCH TRANSITION: endEpoch() done");
 
                                     // Save the file of revenue. This blocking save can be called from any thread
                                     // Revenue v2 data
@@ -6892,12 +6913,15 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                                     commonBuffers.releaseBuffer(reorgBuffer);
 
                                     // instruct main loop to save system and wait until it is done
+                                    logToConsole(L"EPOCH TRANSITION: saving system state...");
                                     systemMustBeSaved = true;
                                     WAIT_WHILE(systemMustBeSaved);
                                     epochTransitionState = 2;
 
+                                    logToConsole(L"EPOCH TRANSITION: running beginEpoch()...");
                                     beginEpoch();
                                     isBeginEpoch = true;
+                                    logToConsole(L"EPOCH TRANSITION: beginEpoch() done");
 
                                     // Some debug checks that we are ready for the next epoch
                                     ASSERT(system.numberOfSolutions == 0);
@@ -6913,6 +6937,7 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                                     ASSERT(minimumComputorScore == 0 && minimumCandidateScore == 0);
 
                                     // instruct main loop to save files and wait until it is done
+                                    logToConsole(L"EPOCH TRANSITION: saving spectrum/universe/computer...");
                                     spectrumMustBeSaved = true;
                                     universeMustBeSaved = true;
                                     computerMustBeSaved = true;
@@ -6926,6 +6951,16 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                                     getComputerDigest(etalonTick.saltedComputerDigest);
 
                                     epochTransitionState = 0;
+                                    {
+                                        CHAR16 etMsg[192];
+                                        setText(etMsg, L"=== EPOCH TRANSITION: COMPLETE | now epoch ");
+                                        appendNumber(etMsg, system.epoch, FALSE);
+                                        appendText(etMsg, L" | initialTick ");
+                                        appendNumber(etMsg, system.initialTick, FALSE);
+                                        appendText(etMsg, L" | tick ");
+                                        appendNumber(etMsg, system.tick, FALSE);
+                                        logToConsole(etMsg);
+                                    }
                                 }
                                 ASSERT(epochTransitionWaitingRequestProcessors >= 0 && epochTransitionWaitingRequestProcessors <= nRequestProcessorIDs);
 
