@@ -48,6 +48,7 @@ add_executable(
 		contract_qip.cpp
 		contract_qusino.cpp
 		custom_qubic_mining_storage.cpp
+		fast_tx_window.cpp
    		file_io.cpp
    		# fourq.cpp
    		kangaroo_twelve.cpp
@@ -99,6 +100,7 @@ target_link_libraries(
   GTest::gtest_main
   platform_common
   platform_os
+  Blosc2::blosc2_static
 )
 
 include(GoogleTest)

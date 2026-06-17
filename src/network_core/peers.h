@@ -178,6 +178,8 @@ static Peer peers[NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTION
 static volatile long long numberOfReceivedBytes = 0, prevNumberOfReceivedBytes = 0;
 static volatile long long numberOfTransmittedBytes = 0, prevNumberOfTransmittedBytes = 0;
 static int numberOfAcceptedIncommingConnection = 0;
+// Max incoming slots allowed to arm Accept() (--max-inbound / /set-max-inbound); default = all.
+static int maxInboundAccepts = NUMBER_OF_INCOMING_CONNECTIONS;
 
 static volatile char publicPeersLock = 0;
 static unsigned int numberOfPublicPeers = 0;
@@ -255,7 +257,9 @@ static bool isPrivateIp(const unsigned char address[4])
     return false;
 }
 
-static void closePeer(Peer* peer, int closeGracefullyRetries = 0)
+#include "extensions/peer_disc_stats.h"
+
+static void closePeer(Peer* peer, int closeGracefullyRetries = 0, unsigned int discReason = PeerDisc::OTHER)
 {
     PROFILE_SCOPE();
     ASSERT(isMainProcessor());
@@ -264,6 +268,7 @@ static void closePeer(Peer* peer, int closeGracefullyRetries = 0)
         if (!peer->isClosing)
         {
             peer->isClosing = TRUE;
+            PeerDisc::note(discReason, (unsigned int)(peer - peers));
             if (peer->isOracleMachineNode())
             {
                 // Track close time for OM nodes to enable reconnection cooldown
@@ -392,7 +397,9 @@ static void pushCustom(RequestResponseHeader* requestResponseHeader, int numberO
     unsigned short numberOfSuitablePeers = 0;
     for (unsigned int i = 0; i < NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTIONS; i++)
     {
-        if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted && peers[i].exchangedPublicPeers && !peers[i].isClosing)
+        // Outbound (dialed) peers are request-eligible once connected, before ExchangePublicPeers arrives.
+        if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted
+            && (i < NUMBER_OF_OUTGOING_CONNECTIONS || peers[i].exchangedPublicPeers) && !peers[i].isClosing)
         {
             if ((filterFullNode && peers[i].isFullNode()) || (!filterFullNode))
             {
@@ -497,7 +504,7 @@ static void pushPreferringAtOrAbove(
     for (unsigned int i = 0; i < NUMBER_OF_OUTGOING_CONNECTIONS + NUMBER_OF_INCOMING_CONNECTIONS; i++)
     {
         if (peers[i].tcp4Protocol && peers[i].isConnectedAccepted
-            && peers[i].exchangedPublicPeers && !peers[i].isClosing)
+            && (i < NUMBER_OF_OUTGOING_CONNECTIONS || peers[i].exchangedPublicPeers) && !peers[i].isClosing)
         {
             if (peers[i].peerReportedTick >= targetTick)
                 qualified[numQualified++] = i;
@@ -770,6 +777,10 @@ static void penalizePublicPeerRejectedConnection(const IPv4Address& address)
 
 static void addPublicPeer(const IPv4Address& address)
 {
+    if (address.u8[0] == 127) // never dial loopback: same-port loopback is always self-connect
+    {
+        return;
+    }
     if (isBogonAddress(address)) // not add bogon ip
     {
         return;
@@ -819,7 +830,7 @@ static bool peerConnectionNewlyEstablished(unsigned int i)
                 peers[i].connectAcceptToken.CompletionToken.Status = -1;
                 penalizePublicPeerRejectedConnection(peers[i].address);
 
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::CONNECT_REJECT);
 
             }
             else
@@ -931,7 +942,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
             if (peers[i].receiveToken.CompletionToken.Status)
             {
                 peers[i].receiveToken.CompletionToken.Status = -1;
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::RECV_ERR);
             }
             else
             {
@@ -943,6 +954,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
                 else
                 {
                     numberOfReceivedBytes += peers[i].receiveData.DataLength;
+                    PeerDisc::noteRx(i, peers[i].receiveData.DataLength);
                     *((unsigned long long*) & peers[i].receiveData.FragmentTable[0].FragmentBuffer) += peers[i].receiveData.DataLength;
 
                     // Parse every complete packet in place, advancing a read cursor per packet.
@@ -961,7 +973,7 @@ static void processReceivedData(unsigned int i, unsigned int salt)
                             appendText(message, L"...");
                             logToConsole(message);
                             forgetPublicPeer(peers[i].address);
-                            closePeer(&peers[i]);
+                            closePeer(&peers[i], 0, PeerDisc::PROTO_VIOLATION);
                             peerForgotten = true;
                             break;
                         }
@@ -1070,7 +1082,7 @@ static void receiveData(unsigned int i, unsigned int salt)
                     if ((status = peers[i].tcp4Protocol->GetModeData(peers[i].tcp4Protocol, &state, NULL, NULL, NULL, NULL))
                         || state == Tcp4StateClosed)
                     {
-                        closePeer(&peers[i]);
+                        closePeer(&peers[i], 0, PeerDisc::RECV_FIN_POLL);
                     }
                     else
                     {
@@ -1083,7 +1095,7 @@ static void receiveData(unsigned int i, unsigned int salt)
                                 logStatusToConsole(L"EFI_TCP4_PROTOCOL.Receive() fails", status, __LINE__);
                             }
 
-                            closePeer(&peers[i]);
+                            closePeer(&peers[i], 0, PeerDisc::RECV_INIT_FAIL);
                         }
                         else
                         {
@@ -1124,7 +1136,7 @@ static void processTransmittedData(unsigned int i, unsigned int salt)
             {
                 // transmission error
                 peers[i].transmitToken.CompletionToken.Status = -1;
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::XMIT_ERR);
             }
             else
             {
@@ -1137,6 +1149,7 @@ static void processTransmittedData(unsigned int i, unsigned int salt)
                 {
                     // success
                     numberOfTransmittedBytes += peers[i].transmitData.DataLength;
+                    PeerDisc::noteTx(i, peers[i].transmitData.DataLength);
 
                     // Update OM activity time on successful transmit so the inactivity
                     // timer doesn't kill connections that are actively sending queries
@@ -1164,7 +1177,7 @@ static void transmitData(unsigned int i, unsigned int salt)
             if ((status = peers[i].tcp4Protocol->GetModeData(peers[i].tcp4Protocol, &state, NULL, NULL, NULL, NULL))
                 || state == Tcp4StateClosed)
             {
-                closePeer(&peers[i]);
+                closePeer(&peers[i], 0, PeerDisc::XMIT_GETMODE);
             }
             else
             {
@@ -1174,7 +1187,7 @@ static void transmitData(unsigned int i, unsigned int salt)
                 if (status = peers[i].tcp4Protocol->Transmit(peers[i].tcp4Protocol, &peers[i].transmitToken))
                 {
                     logStatusToConsole(L"EFI_TCP4_PROTOCOL.Transmit() fails", status, __LINE__);
-                    closePeer(&peers[i]);
+                    closePeer(&peers[i], 0, PeerDisc::XMIT_INIT_FAIL);
                 }
                 else
                 {
@@ -1296,8 +1309,8 @@ static void peerReconnectIfInactive(unsigned int i, unsigned short port)
         else
         {
             // incoming connection:
-            // accept connections if peer list is not static
-            if (!listOfPeersIsStatic)
+            // accept connections if peer list is not static and inbound cap not reached
+            if (!listOfPeersIsStatic && (i - NUMBER_OF_OUTGOING_CONNECTIONS) < (unsigned int)maxInboundAccepts)
             {
                 peers[i].isIncommingConnection = TRUE;
                 peers[i].receiveData.FragmentTable[0].FragmentBuffer = peers[i].receiveBuffer;
