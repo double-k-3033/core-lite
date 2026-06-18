@@ -133,21 +133,15 @@ protected:
     volatile char memLock;
     volatile long memReaders = 0;
 
-    // Exclusive: claim writer byte (pump IO while the main thread waits — else asyncLoad under the
-    // lock deadlocks), then drain shared readers.
+    // Exclusive: claim the writer byte, then drain shared readers. The claim pumps IO while waiting
+    // (a writer ahead may be parked in asyncLoad() under the lock — the documented deadlock). The
+    // drain does NOT: shared holders are hit-path/unpin only, never do IO, so they always finish on
+    // their own — a plain spin suffices.
     void acquireMemLock()
     {
         acquireLockWithIOPump(memLock);
-        if (memReaders)
-        {
-            const bool mainThread = (gAsyncFileIO && gAsyncFileIO->isMainThread());
-            while (memReaders)
-            {
-                if (mainThread)
-                    flushAsyncFileIOBuffer(1);
-                _mm_pause();
-            }
-        }
+        while (memReaders)
+            _mm_pause();
     }
 
     // Shared, writer-preferring. The seq_cst inc + re-read of memLock is the Dekker handshake vs
