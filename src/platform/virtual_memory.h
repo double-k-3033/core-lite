@@ -128,16 +128,13 @@ protected:
     unsigned long long currentId; // total items in this array, aka: latest item index + 1
     unsigned long long currentPageId; // current page index that's written on
 
-    // memLock is the writer byte of a reader/writer spinlock. Read-only cache-hit fast paths take
-    // the shared side (lockShared); every mutator — eviction/load/reset/dump and the whole base
-    // VirtualMemory — takes the exclusive side via acquireMemLock(). memReaders counts live shared
-    // holders so a writer drains them before mutating. (Single-lock history: "can optimize later".)
+    // Reader/writer spinlock: memLock is the writer byte, memReaders counts shared holders. Cache-hit
+    // fast paths take shared (lockShared); every mutator takes exclusive (acquireMemLock).
     volatile char memLock;
     volatile long memReaders = 0;
 
-    // Exclusive acquire. Claims the writer byte (pumping async IO while the main thread waits, so a
-    // non-main thread parked in asyncLoad() under the lock can still be serviced), then drains the
-    // in-flight shared readers. Writer-preferring: lockShared backs off while memLock is set.
+    // Exclusive: claim writer byte (pump IO while the main thread waits — else asyncLoad under the
+    // lock deadlocks), then drain shared readers.
     void acquireMemLock()
     {
         acquireLockWithIOPump(memLock);
@@ -153,10 +150,8 @@ protected:
         }
     }
 
-    // Shared acquire for the read-only cache-hit fast paths. Writer-preferring (yields to a waiting
-    // writer). The seq_cst increment of memReaders followed by re-reading memLock is the Dekker
-    // handshake that pairs with acquireMemLock()'s claim-then-drain: at least one side observes the
-    // other, so no shared holder is still live once a writer proceeds past its drain.
+    // Shared, writer-preferring. The seq_cst inc + re-read of memLock is the Dekker handshake vs
+    // acquireMemLock's claim-then-drain: a writer never runs while a reader is live.
     void lockShared()
     {
         for (;;)
@@ -849,27 +844,22 @@ private:
     static constexpr unsigned long long INVALID_PAGE_ID = -1;
     static constexpr unsigned long long isPageWrittenToDiskSize = sizeof(bool) * MAX_PAGE;
 
-    // Per-cache-slot pin count: number of threads currently referencing the page in this slot
-    // (via the thread-local pin arena). A slot with pinCount > 0 is never evicted. Atomic inc/dec
-    // because pin/unpin run under the shared lock (concurrent). See ThreadPinArena above.
+    // Threads referencing the page in this slot (via the pin arena); pinCount>0 is never evicted.
+    // Atomic inc/dec: pin/unpin run concurrently under the shared lock.
     volatile long pinCount[numCachePage + 1] = {};
 
-    // Monitoring counters. pinnedNow is atomic (pin/unpin are concurrent under the shared lock);
-    // the rest are best-effort (read lock-free by the stats printer — a stale read is harmless).
+    // Monitoring. pinnedNow is atomic (concurrent pin/unpin); the rest best-effort (lock-free reads).
     volatile long pinnedNow = 0;            // slots currently pinned
     volatile long pinnedHighWater = 0;      // max slots pinned at once since start
     unsigned long long allPinnedWaits = 0;  // times eviction had to wait for a pin (should be 0)
     unsigned long long cacheHits = 0;       // page accesses served from cache
     unsigned long long cacheMisses = 0;     // page accesses that loaded from disk
 
-    // Bumped by reset() under the exclusive lock; read by pin/unpin under the shared lock (mutually
-    // exclusive with reset). Pins recorded under an older generation are invalid — their cache slot
-    // was wiped/reallocated — so the unpin and the dedup check ignore them.
+    // Bumped by reset() (exclusive); pins from an older generation are stale (slot was reused), so
+    // unpin and the dedup check ignore them.
     unsigned long long generation = 0;
 
-    // Pin a slot for the current thread (caller holds the shared or exclusive lock). Idempotent per
-    // thread: a second access to a slot this thread already pinned is a no-op (dedup via the arena).
-    // pinCount/pinnedNow are atomic because the shared lock lets several threads pin at once.
+    // Pin a slot for this thread (under shared or exclusive). Idempotent per thread (arena dedup).
     void pinSlotForThread(int slot)
     {
         const unsigned long long g = generation;
@@ -885,12 +875,10 @@ private:
     }
     void unpinSlotInternal(int slot, unsigned long long gen)
     {
-        // Shared, not exclusive: unpins run concurrently with each other and with hit-path pins
-        // (pinCount is atomic) but are mutually exclusive with reset()/eviction (the exclusive
-        // side). That exclusion is what lets the generation read below be a plain read.
+        // Shared: concurrent with other unpins/pins (pinCount atomic), exclusive of reset/eviction —
+        // which is why the generation read below can be plain.
         lockShared();
-        // gen != generation => this pin predates a reset(); the slot was already cleared, so
-        // decrementing now would corrupt a fresh pin. Drop it.
+        // gen mismatch => pin predates a reset() that cleared the slot; drop it, don't hit a fresh pin.
         if (gen == generation && slot >= 0 && slot <= (int)numCachePage && pinCount[slot] > 0)
         {
             if (_InterlockedDecrement(&pinCount[slot]) == 0)
@@ -1236,15 +1224,14 @@ public:
     {
         const unsigned long long requested_page_id = index / pageCapacity;
 
-        // Fast path: shared lock, cache hit only. No slot can change identity or contents while any
-        // thread holds shared (eviction is exclusive), so the pin taken here keeps the returned
-        // reference valid past unlockShared() — eviction afterwards skips slots with pinCount > 0.
+        // Fast path: shared lock, cache hit only. Identity/contents are stable under shared (eviction
+        // is exclusive), so the pin keeps the returned ref valid after unlockShared().
         lockShared();
         int cache_page_idx = findCachePage(requested_page_id);
         if (cache_page_idx != -1)
         {
             raiseCurrentPageId(requested_page_id);
-            cacheHits++; // best-effort stat (benign race under shared)
+            cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
             T& resultRef = cache[cache_page_idx][index % pageCapacity];
             unlockShared();
@@ -1277,14 +1264,14 @@ public:
     {
         const unsigned long long requested_page_id = index / pageCapacity;
 
-        // Fast path: shared lock, cache hit only (see getRef). result is a plain local — a function
-        // static here was read after the lock dropped and could return another thread's pointer.
+        // Fast path: shared lock, cache hit only (see getRef). result is a plain local — a static
+        // would be read after unlock and could return another thread's pointer.
         lockShared();
         int cache_page_idx = findCachePage(requested_page_id);
         if (cache_page_idx != -1)
         {
             raiseCurrentPageId(requested_page_id);
-            cacheHits++; // best-effort stat (benign race under shared)
+            cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
             T* result = &cache[cache_page_idx][index % pageCapacity];
             unlockShared();
@@ -1335,8 +1322,7 @@ public:
         const unsigned long long pageId = offset / maxBytesPerPage;
         const unsigned long long offsetInPage = offset % maxBytesPerPage;
 
-        // Fast path: shared lock, in-page cache hit only. The page-straddle extra-bytes branch
-        // mutates per-page state, so it (and misses) fall through to the exclusive slow path.
+        // Fast path: shared, in-page hit only. Straddle (mutates per-page state) + miss go exclusive.
         if (maxBytesPerPage - offsetInPage >= maxBytesPerElement)
         {
             lockShared();
@@ -1344,7 +1330,7 @@ public:
             if (idx != -1)
             {
                 raiseCurrentPageId(pageId);
-                cacheHits++; // best-effort stat (benign race under shared)
+                cacheHits++; // best-effort stat
                 pinSlotForThread(idx);
                 T* hit = (T*)((unsigned char*)cache[idx] + offsetInPage);
                 unlockShared();
