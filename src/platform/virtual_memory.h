@@ -1010,7 +1010,15 @@ private:
         // sized above the max pages pinned concurrently this never triggers; the bounded wait
         // turns an under-sizing into a loud failure rather than silent corruption.
         if (cache_page_id == -1)
+        {
             allPinnedWaits++;
+            // Surface the pin-exhaustion immediately (not only at the 5s fatal below) so an operator can
+            // tell "stuck on swap-VM pins" apart from normal slow processing.
+            CHAR16 pinMsg[160];
+            setText(pinMsg, L"WARNING: swapVM all cache pages pinned, waiting for a free slot (pin leak or numCachePage too small) | prefix ");
+            appendText(pinMsg, pageDir);
+            logToConsole(pinMsg);
+        }
         int allPinnedWaitMs = 0;
         while (cache_page_id == -1)
         {
@@ -1021,7 +1029,17 @@ private:
             if (rechecked != -1)
                 return rechecked;
             cache_page_id = getMostOutdatedCachePageExceptCurrentPage();
-            if (++allPinnedWaitMs > 5000) // ~5s
+            ++allPinnedWaitMs;
+            if (allPinnedWaitMs % 1000 == 0 && allPinnedWaitMs < 5000) // heartbeat once per second while waiting
+            {
+                CHAR16 pinMsg[160];
+                setText(pinMsg, L"swapVM still waiting for a free cache page (");
+                appendNumber(pinMsg, (unsigned long long)(allPinnedWaitMs / 1000), FALSE);
+                appendText(pinMsg, L"s) | prefix ");
+                appendText(pinMsg, pageDir);
+                logToConsole(pinMsg);
+            }
+            if (allPinnedWaitMs > 5000) // ~5s
             {
                 setText(message, L"Fatal: swapVM all cache pages pinned (numCachePage too small) | prefix ");
                 appendText(message, pageDir);

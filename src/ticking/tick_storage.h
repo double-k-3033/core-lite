@@ -1030,6 +1030,7 @@ public:
 
 #ifndef NDEBUG
             for (unsigned int tickIndex = 0; tickIndex < MAX_NUMBER_OF_TICKS_PER_EPOCH; tickIndex++) {
+                PinScope _pinScope; // release this tick's swap-page pins each iteration (debug consistency scan over the whole epoch)
                 TickData &tickData = TickStorage::tickData[tickIndex];
                 ASSERT(isAllBytesZero(&tickData, sizeof(tickData)));
 
