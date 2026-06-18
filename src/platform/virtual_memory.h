@@ -128,14 +128,64 @@ protected:
     unsigned long long currentId; // total items in this array, aka: latest item index + 1
     unsigned long long currentPageId; // current page index that's written on
 
-    volatile char memLock; // every read/write needs a memory lock, can optimize later
+    // memLock is the writer byte of a reader/writer spinlock. Read-only cache-hit fast paths take
+    // the shared side (lockShared); every mutator — eviction/load/reset/dump and the whole base
+    // VirtualMemory — takes the exclusive side via acquireMemLock(). memReaders counts live shared
+    // holders so a writer drains them before mutating. (Single-lock history: "can optimize later".)
+    volatile char memLock;
+    volatile long memReaders = 0;
 
-    // Acquire memLock, but if we are the main thread (the only thread that can do IO),
-    // keep pumping the async IO queue while we wait. Otherwise a non-main thread parked
-    // inside asyncLoad() while holding memLock could never be serviced and cause deadlock.
+    // Exclusive acquire. Claims the writer byte (pumping async IO while the main thread waits, so a
+    // non-main thread parked in asyncLoad() under the lock can still be serviced), then drains the
+    // in-flight shared readers. Writer-preferring: lockShared backs off while memLock is set.
     void acquireMemLock()
     {
-        acquireLockWithIOPump(memLock); 
+        acquireLockWithIOPump(memLock);
+        if (memReaders)
+        {
+            const bool mainThread = (gAsyncFileIO && gAsyncFileIO->isMainThread());
+            while (memReaders)
+            {
+                if (mainThread)
+                    flushAsyncFileIOBuffer(1);
+                _mm_pause();
+            }
+        }
+    }
+
+    // Shared acquire for the read-only cache-hit fast paths. Writer-preferring (yields to a waiting
+    // writer). The seq_cst increment of memReaders followed by re-reading memLock is the Dekker
+    // handshake that pairs with acquireMemLock()'s claim-then-drain: at least one side observes the
+    // other, so no shared holder is still live once a writer proceeds past its drain.
+    void lockShared()
+    {
+        for (;;)
+        {
+            while (memLock)
+                _mm_pause();
+            _InterlockedIncrement(&memReaders);
+            if (!memLock)
+                return;
+            _InterlockedDecrement(&memReaders);
+        }
+    }
+    void unlockShared()
+    {
+        _InterlockedDecrement(&memReaders);
+    }
+
+    // Monotonic max of currentPageId, safe under the shared lock (concurrent hit-path callers).
+    void raiseCurrentPageId(unsigned long long v)
+    {
+        unsigned long long cur = currentPageId;
+        while (v > cur)
+        {
+            unsigned long long prev = (unsigned long long)_InterlockedCompareExchange64(
+                (volatile long long*)&currentPageId, (long long)v, (long long)cur);
+            if (prev == cur)
+                break;
+            cur = prev;
+        }
     }
 
     void generatePageName(CHAR16 pageName[64], unsigned long long page_id)
@@ -329,6 +379,7 @@ protected:
         currentId = 0;
         currentPageId = 0;
         memLock = 0;
+        memReaders = 0;
     }
 
 public:
@@ -777,6 +828,11 @@ class SwapVirtualMemory : private VirtualMemory<T, prefixName, pageDirectory, pa
     using VMBase::cachePageId;
     using VMBase::lastAccessedTimestamp;
     using VMBase::memLock;
+    using VMBase::memReaders;
+    using VMBase::acquireMemLock;
+    using VMBase::lockShared;
+    using VMBase::unlockShared;
+    using VMBase::raiseCurrentPageId;
     using VMBase::generatePageName;
     using VMBase::findCachePage;
     using VMBase::loadPageToCache;
@@ -794,47 +850,53 @@ private:
     static constexpr unsigned long long isPageWrittenToDiskSize = sizeof(bool) * MAX_PAGE;
 
     // Per-cache-slot pin count: number of threads currently referencing the page in this slot
-    // (via the thread-local pin arena). A slot with pinCount > 0 is never evicted. Guarded by
-    // memLock. See ThreadPinArena / releaseThreadPins above.
-    int pinCount[numCachePage + 1] = {};
+    // (via the thread-local pin arena). A slot with pinCount > 0 is never evicted. Atomic inc/dec
+    // because pin/unpin run under the shared lock (concurrent). See ThreadPinArena above.
+    volatile long pinCount[numCachePage + 1] = {};
 
-    // Monitoring counters (updated under memLock; read lock-free by the stats printer — a stale
-    // read is harmless). pinnedHighWater vs getNumCachePage() is the headroom metric.
-    int pinnedNow = 0;                      // slots currently pinned
-    int pinnedHighWater = 0;                // max slots pinned at once since start
+    // Monitoring counters. pinnedNow is atomic (pin/unpin are concurrent under the shared lock);
+    // the rest are best-effort (read lock-free by the stats printer — a stale read is harmless).
+    volatile long pinnedNow = 0;            // slots currently pinned
+    volatile long pinnedHighWater = 0;      // max slots pinned at once since start
     unsigned long long allPinnedWaits = 0;  // times eviction had to wait for a pin (should be 0)
     unsigned long long cacheHits = 0;       // page accesses served from cache
     unsigned long long cacheMisses = 0;     // page accesses that loaded from disk
 
-    // Bumped by reset() (under memLock). Pins recorded under an older generation are invalid —
-    // their cache slot was wiped/reallocated — so the unpin and the dedup check ignore them.
+    // Bumped by reset() under the exclusive lock; read by pin/unpin under the shared lock (mutually
+    // exclusive with reset). Pins recorded under an older generation are invalid — their cache slot
+    // was wiped/reallocated — so the unpin and the dedup check ignore them.
     unsigned long long generation = 0;
 
-    // Pin/unpin a slot for the current thread (caller holds memLock). Idempotent per thread:
-    // a second access to a slot this thread already pinned is a no-op (dedup via the arena).
+    // Pin a slot for the current thread (caller holds the shared or exclusive lock). Idempotent per
+    // thread: a second access to a slot this thread already pinned is a no-op (dedup via the arena).
+    // pinCount/pinnedNow are atomic because the shared lock lets several threads pin at once.
     void pinSlotForThread(int slot)
     {
-        if (tlPinArena.contains(this, slot, generation))
+        const unsigned long long g = generation;
+        if (tlPinArena.contains(this, slot, g))
             return;
-        if (pinCount[slot]++ == 0)
+        if (_InterlockedIncrement(&pinCount[slot]) == 1)
         {
-            pinnedNow++;
-            if (pinnedNow > pinnedHighWater)
-                pinnedHighWater = pinnedNow;
+            const long now = _InterlockedIncrement(&pinnedNow);
+            if (now > pinnedHighWater)
+                pinnedHighWater = now;
         }
-        tlPinArena.add(this, &SwapVirtualMemory::unpinThunk, slot, generation);
+        tlPinArena.add(this, &SwapVirtualMemory::unpinThunk, slot, g);
     }
     void unpinSlotInternal(int slot, unsigned long long gen)
     {
-        ACQUIRE(memLock);
+        // Shared, not exclusive: unpins run concurrently with each other and with hit-path pins
+        // (pinCount is atomic) but are mutually exclusive with reset()/eviction (the exclusive
+        // side). That exclusion is what lets the generation read below be a plain read.
+        lockShared();
         // gen != generation => this pin predates a reset(); the slot was already cleared, so
         // decrementing now would corrupt a fresh pin. Drop it.
         if (gen == generation && slot >= 0 && slot <= (int)numCachePage && pinCount[slot] > 0)
         {
-            if (--pinCount[slot] == 0)
-                pinnedNow--;
+            if (_InterlockedDecrement(&pinCount[slot]) == 0)
+                _InterlockedDecrement(&pinnedNow);
         }
-        RELEASE(memLock);
+        unlockShared();
     }
     static void unpinThunk(void* self, int slot, unsigned long long gen)
     {
@@ -954,7 +1016,7 @@ private:
         {
             RELEASE(memLock);
             sleepMilliseconds(1);
-            ACQUIRE(memLock);
+            acquireMemLock();
             int rechecked = findCachePage(pageId);
             if (rechecked != -1)
                 return rechecked;
@@ -1102,9 +1164,9 @@ public:
         // generation here is what makes other threads' stale pin notes (e.g. HTTP request
         // threads that pinned tickData and aren't drained at this point) harmless: their later
         // release sees gen != generation and is dropped, instead of mis-decrementing a fresh pin.
-        ACQUIRE(memLock);
+        acquireMemLock();
         generation++;
-        setMem(pinCount, sizeof(pinCount), 0);
+        setMem((void*)pinCount, sizeof(pinCount), 0);
         pinnedNow = 0; // cumulative stats (hits/misses/highWater/waits) are kept across resets
         RELEASE(memLock);
         VMBase::reset();
@@ -1154,12 +1216,28 @@ public:
     T& getRef(unsigned long long index)
     requires (mode == SwapMode::INDEX_MODE)
     {
-        static T empty;
-        ACQUIRE(memLock);
+        const unsigned long long requested_page_id = index / pageCapacity;
 
-        unsigned long long requested_page_id = index / pageCapacity;
+        // Fast path: shared lock, cache hit only. No slot can change identity or contents while any
+        // thread holds shared (eviction is exclusive), so the pin taken here keeps the returned
+        // reference valid past unlockShared() — eviction afterwards skips slots with pinCount > 0.
+        lockShared();
+        int cache_page_idx = findCachePage(requested_page_id);
+        if (cache_page_idx != -1)
+        {
+            raiseCurrentPageId(requested_page_id);
+            cacheHits++; // best-effort stat (benign race under shared)
+            pinSlotForThread(cache_page_idx);
+            T& resultRef = cache[cache_page_idx][index % pageCapacity];
+            unlockShared();
+            return resultRef;
+        }
+        unlockShared();
+
+        // Slow path: miss -> exclusive (may evict + load).
+        acquireMemLock();
         currentPageId = requested_page_id > currentPageId ? requested_page_id : currentPageId;
-        int cache_page_idx = loadPageToCacheAndTryToPersist(requested_page_id);
+        cache_page_idx = loadPageToCacheAndTryToPersist(requested_page_id);
         if (cache_page_idx == -1)
         {
             setText(message, L"Fatal Error: Invalid cache page index | Line ");
@@ -1179,12 +1257,27 @@ public:
     T* getPtr(unsigned long long index)
     requires (mode == SwapMode::INDEX_MODE)
     {
-        static T* result = nullptr;
-        ACQUIRE(memLock);
-		result = nullptr;
-        unsigned long long requested_page_id = index / pageCapacity;
+        const unsigned long long requested_page_id = index / pageCapacity;
+
+        // Fast path: shared lock, cache hit only (see getRef). result is a plain local — a function
+        // static here was read after the lock dropped and could return another thread's pointer.
+        lockShared();
+        int cache_page_idx = findCachePage(requested_page_id);
+        if (cache_page_idx != -1)
+        {
+            raiseCurrentPageId(requested_page_id);
+            cacheHits++; // best-effort stat (benign race under shared)
+            pinSlotForThread(cache_page_idx);
+            T* result = &cache[cache_page_idx][index % pageCapacity];
+            unlockShared();
+            return result;
+        }
+        unlockShared();
+
+        // Slow path: miss -> exclusive (may evict + load).
+        acquireMemLock();
         currentPageId = requested_page_id > currentPageId ? requested_page_id : currentPageId;
-        int cache_page_idx = loadPageToCacheAndTryToPersist(requested_page_id);
+        cache_page_idx = loadPageToCacheAndTryToPersist(requested_page_id);
         if (cache_page_idx == -1)
         {
             setText(message, L"Fatal Error: Invalid cache page index | Line ");
@@ -1204,7 +1297,7 @@ public:
             exit(1);
         }
         pinSlotForThread(cache_page_idx); // keep page resident until this thread's next boundary
-        result = &cache[cache_page_idx][index % pageCapacity];
+        T* result = &cache[cache_page_idx][index % pageCapacity];
         RELEASE(memLock);
         return result;
     }
@@ -1221,13 +1314,32 @@ public:
     T* operator[](unsigned long long offset)
     requires (mode == SwapMode::OFFSET_MODE)
     {
-        static T* result = nullptr;
-        ACQUIRE(memLock);
-		result = nullptr;
-        unsigned long long pageId = offset / maxBytesPerPage;
-        unsigned long long offsetInPage = offset % maxBytesPerPage;
-        long long lastElementLength = 0;
+        const unsigned long long pageId = offset / maxBytesPerPage;
+        const unsigned long long offsetInPage = offset % maxBytesPerPage;
 
+        // Fast path: shared lock, in-page cache hit only. The page-straddle extra-bytes branch
+        // mutates per-page state, so it (and misses) fall through to the exclusive slow path.
+        if (maxBytesPerPage - offsetInPage >= maxBytesPerElement)
+        {
+            lockShared();
+            int idx = findCachePage(pageId);
+            if (idx != -1)
+            {
+                raiseCurrentPageId(pageId);
+                cacheHits++; // best-effort stat (benign race under shared)
+                pinSlotForThread(idx);
+                T* hit = (T*)((unsigned char*)cache[idx] + offsetInPage);
+                unlockShared();
+                return hit;
+            }
+            unlockShared();
+        }
+
+        // Slow path: miss or page-straddle -> exclusive.
+        T* result = nullptr;
+        long long lastElementLength = 0;
+        acquireMemLock();
+        currentPageId = pageId > currentPageId ? pageId : currentPageId;
         int cache_page_idx = loadPageToCacheAndTryToPersist(pageId);
         if (cache_page_idx == -1)
         {
@@ -1298,7 +1410,7 @@ public:
 
     unsigned long long dumpVMState(unsigned char* buffer)
     {
-        ACQUIRE(memLock);
+        acquireMemLock();
         unsigned long long ret = 0;
         for (int i = 0; i <= numCachePage; i++)
         {
@@ -1343,7 +1455,7 @@ public:
 
     unsigned long long loadVMState(unsigned char* buffer)
     {
-        ACQUIRE(memLock);
+        acquireMemLock();
         unsigned long long ret = 0;
         for (int i = 0; i <= numCachePage; i++)
         {
