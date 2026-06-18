@@ -9560,6 +9560,7 @@ void processArgs(int argc, const char* argv[]) {
         ("http-port", "Port for the built-in HTTP/RPC server to listen on", cxxopts::value<int>()->default_value("41841"))
         ("static-peers", "Run in static peer mode: do not add/remove peers, do not churn 25% of non-fullnode peers every 2 minutes, do not accept new incoming connections. Useful for nodes far from the network's center of mass where the default churn drops good peers before they're classified as fullnodes.")
         ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
+        ("swap-dirty-track", "Auto-track dirty SwapVM cache pages via mprotect+SIGSEGV (Linux only): skip the writeback (and compression) for pages never modified since load. Trades a small mprotect/fault cost for less disk I/O. Off by default.")
         ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"))
         ("max-inbound", "Max number of inbound connection slots that may accept. Lower during catch-up to stop serving inbound peers (0 = reject all inbound, like static). Default = all incoming slots.", cxxopts::value<int>()->default_value("-1"));
     auto result = options.parse(argc, argv);
@@ -9568,6 +9569,10 @@ void processArgs(int argc, const char* argv[]) {
     if (result.count("swap-compression")) {
         gSwapCompressionEnabled = true;
         logColorToScreen("INFO", "Swap compression enabled: SwapVM disk pages will be compressed with blosc2 on save/load");
+    }
+    if (result.count("swap-dirty-track")) {
+        gSwapDirtyTrackEnabled = true;
+        logColorToScreen("INFO", "Swap dirty tracking enabled: clean SwapVM cache pages skip writeback on eviction");
     }
 #endif
 
@@ -9863,7 +9868,11 @@ void watchAndCheckin()
 #endif
 
 #ifdef __linux__
-void signalHandler(int sig) {
+void signalHandler(int sig, siginfo_t* si, void* /*ucontext*/) {
+    // Component B fast path: a write to an armed read-only SwapVM cache page faults here. Mark the
+    // slot dirty, restore write access, and resume the store. Any other fault hits the crash path below.
+    if (sig == SIGSEGV && si && SwapDirtyTrack::tryMarkDirty(si->si_addr))
+        return;
     boost::stacktrace::safe_dump_to("crash.dump");
     // Send to server in a child process
     pid_t pid = fork();
@@ -9903,7 +9912,8 @@ void signalHandler(int sig) {
 void setupSignalHandlers() {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signalHandler;
+    sa.sa_sigaction = signalHandler;       // SA_SIGINFO form: handler receives siginfo_t* (si_addr)
+    sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
 
     // Common crash signals to catch:

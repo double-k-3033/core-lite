@@ -720,6 +720,10 @@ public:
         appendNumber(m, vm.getCacheHits(), false);
         appendText(m, (CHAR16*)L" miss ");
         appendNumber(m, vm.getCacheMisses(), false);
+        appendText(m, (CHAR16*)L" cleanEvict ");
+        appendNumber(m, vm.getCleanEvicts(), false);
+        appendText(m, (CHAR16*)L" dirtyEvict ");
+        appendNumber(m, vm.getDirtyEvicts(), false);
         logToConsole(m);
     }
 #endif
