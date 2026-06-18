@@ -163,20 +163,6 @@ protected:
         _InterlockedDecrement(&memReaders);
     }
 
-    // Monotonic max of currentPageId, safe under the shared lock (concurrent hit-path callers).
-    void raiseCurrentPageId(unsigned long long v)
-    {
-        unsigned long long cur = currentPageId;
-        while (v > cur)
-        {
-            unsigned long long prev = (unsigned long long)_InterlockedCompareExchange64(
-                (volatile long long*)&currentPageId, (long long)v, (long long)cur);
-            if (prev == cur)
-                break;
-            cur = prev;
-        }
-    }
-
     void generatePageName(CHAR16 pageName[64], unsigned long long page_id)
     {
         setMem(pageName, sizeof(pageName), 0);
@@ -821,7 +807,6 @@ class SwapVirtualMemory : private VirtualMemory<T, prefixName, pageDirectory, pa
     using VMBase::acquireMemLock;
     using VMBase::lockShared;
     using VMBase::unlockShared;
-    using VMBase::raiseCurrentPageId;
     using VMBase::generatePageName;
     using VMBase::findCachePage;
     using VMBase::loadPageToCache;
@@ -1224,7 +1209,6 @@ public:
         int cache_page_idx = findCachePage(requested_page_id);
         if (cache_page_idx != -1)
         {
-            raiseCurrentPageId(requested_page_id);
             cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
             T& resultRef = cache[cache_page_idx][index % pageCapacity];
@@ -1264,7 +1248,6 @@ public:
         int cache_page_idx = findCachePage(requested_page_id);
         if (cache_page_idx != -1)
         {
-            raiseCurrentPageId(requested_page_id);
             cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
             T* result = &cache[cache_page_idx][index % pageCapacity];
@@ -1323,7 +1306,6 @@ public:
             int idx = findCachePage(pageId);
             if (idx != -1)
             {
-                raiseCurrentPageId(pageId);
                 cacheHits++; // best-effort stat
                 pinSlotForThread(idx);
                 T* hit = (T*)((unsigned char*)cache[idx] + offsetInPage);
