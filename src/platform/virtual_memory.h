@@ -990,6 +990,14 @@ private:
                 return i;
         return -1;
     }
+    // Any slot mid-IO (reserved LOADING while its disk IO runs unlocked).
+    bool anyInflightIO()
+    {
+        for (int i = 0; i <= numCachePage; i++)
+            if (cachePageId[i] == LOADING_PAGE_ID)
+                return true;
+        return false;
+    }
 
     // Component B mprotect machinery. All slot-protection is a no-op unless gSwapDirtyTrackEnabled.
 #if defined(__linux__)
@@ -1090,12 +1098,39 @@ private:
                 if (sz == pageSize)
                     break;
 
-                setText(message, L"swapVM loadPage failed (attempt ");
+                // Loud exact cause (missing vs size-mismatch + full path) so a torn/missing .pg is hand-recoverable.
+                long long onDiskSize = getFileSize((CHAR16*)pageName, (CHAR16*)pageDir);
+                bool compOn = false;
+#ifdef __linux__
+                compOn = gSwapCompressionEnabled;
+#endif
+                setText(message, L"swapVM load FAILED page ");
+                appendNumber(message, pageId, true);
+                appendText(message, L" | file ");
+                appendText(message, pageDir);
+                appendText(message, L"/");
+                appendText(message, (CHAR16*)pageName);
+                appendText(message, L" | wantPageBytes ");
+                appendNumber(message, (unsigned long long)pageSize, false);
+                appendText(message, L" | onDisk ");
+                if (onDiskSize < 0)
+                {
+                    appendText(message, L"MISSING(not found)");
+                }
+                else
+                {
+                    appendNumber(message, (unsigned long long)onDiskSize, false);
+                    if (!compOn && (unsigned long long)onDiskSize != pageSize)
+                        appendText(message, L" SIZE_MISMATCH");
+                }
+                appendText(message, L" | readReturned ");
+                appendNumber(message, (unsigned long long)sz, false);
+                appendText(message, L" | compression ");
+                appendText(message, compOn ? L"on" : L"off");
+                appendText(message, L" | attempt ");
                 appendNumber(message, (unsigned long long)(attempt + 1), false);
                 appendText(message, L"/");
                 appendNumber(message, (unsigned long long)SWAPVM_IO_MAX_ATTEMPTS, false);
-                appendText(message, L") page ");
-                appendNumber(message, pageId, true);
                 logToConsole(message);
 
                 if (attempt + 1 < SWAPVM_IO_MAX_ATTEMPTS)
@@ -1109,6 +1144,16 @@ private:
         {
             sz = pageSize;
             setMem(cache[slot], pageSize, 0);
+        }
+        if (sz != pageSize)
+        {
+            setText(message, L"swapVM load GAVE UP (node will fatal) page ");
+            appendNumber(message, pageId, true);
+            appendText(message, L" file ");
+            appendText(message, pageDir);
+            appendText(message, L"/");
+            appendText(message, (CHAR16*)pageName);
+            logToConsole(message);
         }
         return sz == pageSize;
     }
@@ -1268,6 +1313,21 @@ public:
         // threads that pinned tickData and aren't drained at this point) harmless: their later
         // release sees gen != generation and is dropped, instead of mis-decrementing a fresh pin.
         acquireMemLock();
+        // Wait out in-flight swap IO before teardown (HTTP threads run it unlocked and aren't parked):
+        // an fwrite racing the pool-zero below tears the .pg and strands a stale written-flag.
+        for (int drainMs = 0; anyInflightIO(); )
+        {
+            RELEASE(memLock);
+            sleepMilliseconds(1);
+            acquireMemLock();
+            if (++drainMs > 5000)
+            {
+                setText(message, L"Fatal: swapVM reset drain timeout (in-flight IO leak) | prefix ");
+                appendText(message, pageDir);
+                logToConsole(message);
+                exit(1);
+            }
+        }
         generation++;
         setMem((void*)pinCount, sizeof(pinCount), 0);
         setMem(loadingTarget, sizeof(loadingTarget), 0xff); // INVALID_PAGE_ID
