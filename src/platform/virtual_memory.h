@@ -1342,11 +1342,15 @@ public:
             setMem(pageHasExtraBytes, pageHasExtraBytesBufferSize, 0);
             setMem(lastestPageExtraBytesOffsetAccessed, lastestPageExtraBytesOffsetAccessedBufferSize, 0xff);
         }
-        VMBase::deinit();
-#if defined(__linux__)
-        allocPageAlignedCachePool(); // re-page-align the pool deinit() freed (registry follows via &currentPage)
-#endif
-        VMBase::init();
+        // Keep the cache pool across reset (only refresh pageDir's epoch): reset doesn't wait for
+        // unparked HTTP readers, so freeing+realloc'ing it would dangle a ref they still hold
+        // (VMBase::reset already zeroed it in place; init() keeps it since currentPage != NULL).
+        if (pageDir != NULL)
+        {
+            freePool(pageDir);
+            pageDir = NULL;
+        }
+        VMBase::init(); // pool kept (currentPage != NULL); pageDir re-alloc'd for the new epoch
 #if defined(__linux__)
         armSlotAfterLoad(0); // re-arm slot 0: VMBase::init's reset set cachePageId[0]=0 again
 #endif
@@ -1418,6 +1422,7 @@ public:
         {
             cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
+            lastAccessedTimestamp[cache_page_idx] = now_ms(); // refresh LRU on hit (racy write, harmless)
             T& resultRef = cache[cache_page_idx][index % pageCapacity];
             unlockShared();
             return resultRef;
@@ -1457,6 +1462,7 @@ public:
         {
             cacheHits++; // best-effort stat
             pinSlotForThread(cache_page_idx);
+            lastAccessedTimestamp[cache_page_idx] = now_ms(); // refresh LRU on hit (racy write, harmless)
             T* result = &cache[cache_page_idx][index % pageCapacity];
             unlockShared();
             return result;
@@ -1517,6 +1523,7 @@ public:
             {
                 cacheHits++; // best-effort stat
                 pinSlotForThread(idx);
+                lastAccessedTimestamp[idx] = now_ms(); // refresh LRU on hit (racy write, harmless)
                 T* hit = (T*)((unsigned char*)cache[idx] + offsetInPage);
                 unlockShared();
                 return hit;
@@ -1600,6 +1607,14 @@ public:
     unsigned long long dumpVMState(unsigned char* buffer)
     {
         acquireMemLock();
+        // Drain in-flight IO so a slot isn't snapshotted mid-fread; a slot still LOADING after the
+        // bounded wait is captured as LOADING and normalized to INVALID on load (consistent fallback).
+        for (int drainMs = 0; anyInflightIO() && drainMs < 1000; drainMs++)
+        {
+            RELEASE(memLock);
+            sleepMilliseconds(1);
+            acquireMemLock();
+        }
         unsigned long long ret = 0;
         for (int i = 0; i <= numCachePage; i++)
         {

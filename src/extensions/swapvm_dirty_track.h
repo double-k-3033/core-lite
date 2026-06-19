@@ -12,8 +12,7 @@
 #include <unistd.h>
 #include <atomic>
 
-// Set by --swap-dirty-track. Off => pools are never armed read-only => no faults, no tracking, and
-// eviction writes back every occupied victim exactly like the plain Component-A build.
+// Set by --swap-dirty-track. Off => pools are never armed read-only => no faults, no tracking.
 inline bool gSwapDirtyTrackEnabled = false;
 
 namespace SwapDirtyTrack
