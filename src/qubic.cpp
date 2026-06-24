@@ -7074,15 +7074,6 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                                     logToConsole(message);
                                 }
 
-                                // Flip forceDontUseSecurityTick flag based on stack
-                                while (!forceDontUseSecurityTickChangeStack.empty())
-                                {
-                                    forceDontUseSecurityTickChangeStack.pop_back();
-                                    forceDontUseSecurityTick = !forceDontUseSecurityTick;
-                                    setText(message, L"forceDontUseSecurityTick is now ");;
-                                    appendText(message, forceDontUseSecurityTick ? L"ON" : L"OFF");
-                                    logToConsole(message);
-                                }
                             }
                         }
                     }
@@ -8418,13 +8409,6 @@ static void processKeyPresses()
             logToConsole(L"Requesting for force skip checking computer digest for this tick.");
             forceDontCheckComputerDigest = true;
             break;
-        case 's':
-            forceDontUseSecurityTickChangeStack.push_back(1);
-            // forceDontUseSecurityTick = !forceDontUseSecurityTick;
-            // setText(message, L"forceDontUseSecurityTick is now ");;
-            // appendText(message, forceDontUseSecurityTick ? L"ON" : L"OFF");
-            logToConsole(message);
-            break;
         }
 
 
@@ -9669,7 +9653,6 @@ void processArgs(int argc, const char* argv[]) {
 		("oa,operator-alias", "Operator alias for RPC tick-info", cxxopts::value<std::string>())
         ("fv, force-verify-solutions", "Passcode to access http server", cxxopts::value<bool>())
         ("fbis, force-broadcast-invalid-solution", "TEST: each tick, broadcast a random-nonce solution tx signed by a random own-computor to exercise the reprocessSolutionTransaction() rollback path", cxxopts::value<bool>())
-        ("s,security-tick", "Core will verify state after x tick, to reduce computational to the node", cxxopts::value<int>()->default_value("1"))
         ("http-port", "Port for the built-in HTTP/RPC server to listen on", cxxopts::value<int>()->default_value("41841"))
         ("static-peers", "Run in static peer mode: do not add/remove peers, do not churn 25% of non-fullnode peers every 2 minutes, do not accept new incoming connections. Useful for nodes far from the network's center of mass where the default churn drops good peers before they're classified as fullnodes.")
         ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
@@ -9744,10 +9727,6 @@ void processArgs(int argc, const char* argv[]) {
         logColorToScreen("INFO", "Lite node operator ID: " + myOperatorId + (!isOperatorIdProvided ? " (default)" : ""));
     }
 
-    if (result.count("security-tick")) {
-        securityTick = result["security-tick"].as<int>();
-        logColorToScreen("INFO", "Security tick set to " + std::to_string(securityTick));
-    }
 
     {
         int mi = result["max-inbound"].as<int>();
