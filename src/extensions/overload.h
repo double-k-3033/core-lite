@@ -115,7 +115,7 @@ Json::Value getCheckInData(const std::string& challenge = "")
 
 static volatile bool forceDontCheckComputerDigest = false;
 static std::vector<int> forceDontUseSecurityTickChangeStack;
-static volatile bool forceDontUseSecurityTick = false;
+static volatile bool forceDontUseSecurityTick = true;
 
 //////////// Go Behind Testnet Trick \\\\\\\\
 
