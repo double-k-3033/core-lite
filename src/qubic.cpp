@@ -171,6 +171,7 @@ static volatile bool isReprocessingSolutions = false;
 #include "extensions/overload.h"
 #include "extensions/lite_checkin.h"
 #include "extensions/test_invalid_solution.h"
+#include "extensions/k12_state_digest_cache.h"
 
 TickStorage::TransactionsDigestAccess TickStorage::transactionsDigestAccess;
 #ifdef _WIN32
@@ -553,7 +554,7 @@ static void enableAVX()
 }
 
 // Should only be called from tick processor to avoid concurrent state changes, which can cause race conditions as detailed in FIXME below.
-static void getComputerDigest(m256i& digest)
+static void getComputerDigest(m256i& digest, bool bypassCache = false)
 {
     PROFILE_SCOPE();
 
@@ -577,7 +578,10 @@ static void getComputerDigest(m256i& digest)
                 contractStateLock[digestIndex].acquireRead();
 
                 const unsigned long long startTime = __rdtsc();
-                KangarooTwelve(contractStates[digestIndex], (unsigned int)size, &contractStateDigests[digestIndex], 32);
+                if (!bypassCache && K12StateDigestCache::gK12StateDigestCacheEnabled && K12StateDigestCache::isCached(digestIndex))
+                    K12StateDigestCache::computeDigest(digestIndex, &contractStateDigests[digestIndex]);
+                else
+                    KangarooTwelve(contractStates[digestIndex], (unsigned int)size, &contractStateDigests[digestIndex], 32);
                 const unsigned long long executionTime = __rdtsc() - startTime;
 
                 contractStateLock[digestIndex].releaseRead();
@@ -621,6 +625,15 @@ static void getComputerDigest(m256i& digest)
     contractStateChangeFlags[0] = 0;
 
     digest = contractStateDigests[(MAX_NUMBER_OF_CONTRACTS * 2 - 1) - 1];
+}
+
+// Quorum-mismatch recovery: rebuild every contract digest canonically (cache bypassed) and resync the
+// incremental cache, so a digest-cache error self-heals instead of forking the node.
+static void recomputeComputerDigestFull(m256i& digest)
+{
+    setMem(contractStateChangeFlags, MAX_NUMBER_OF_CONTRACTS / 8, 0xFF);
+    K12StateDigestCache::invalidateAll();
+    getComputerDigest(digest, /*bypassCache=*/true);
 }
 
 static void getSpectrumDigest(m256i& digest)
@@ -6794,6 +6807,30 @@ static void tickProcessor(void*, unsigned long long processorNumber)
                     gTickNumberOfComputors = tickNumberOfComputors;
                     gTickTotalNumberOfComputors = tickTotalNumberOfComputors;
 
+                    // K12 state-cache safety net: only at ticks where the computer digest is consensus-validated.
+                    // If enough computors voted but quorum doesn't match our etalon, an incremental-cache error
+                    // could be the cause, so recompute the computer digest canonically (cache bypassed) and re-tally
+                    // once. A genuine divergence recomputes to the same value and falls through to normal recovery.
+                    if (K12StateDigestCache::gK12StateDigestCacheEnabled
+                        && (isSystemAtSecurityTick() || isLastTickInEpoch())
+                        && tickNumberOfComputors < QUORUM && tickTotalNumberOfComputors >= QUORUM)
+                    {
+                        static unsigned int gK12RecheckedTick = 0;
+                        if (gK12RecheckedTick != system.tick)
+                        {
+                            gK12RecheckedTick = system.tick;
+                            const m256i before = etalonTick.saltedComputerDigest;
+                            recomputeComputerDigestFull(etalonTick.saltedComputerDigest);
+                            if (etalonTick.saltedComputerDigest != before)
+                            {
+                                logToConsole(L"K12 state-cache computer digest disagreed with quorum; recomputed canonically, re-tallying votes");
+                                updateVotesCount(tickNumberOfComputors, tickTotalNumberOfComputors, quorumComputerDigest);
+                                gTickNumberOfComputors = tickNumberOfComputors;
+                                gTickTotalNumberOfComputors = tickTotalNumberOfComputors;
+                            }
+                        }
+                    }
+
                     if (tickNumberOfComputors >= QUORUM)
                     {
                         tryForceEmptyNextTick();
@@ -7381,7 +7418,11 @@ static bool initialize()
         for (unsigned int contractIndex = 0; contractIndex < contractCount; contractIndex++)
         {
             unsigned long long size = contractDescriptions[contractIndex].stateSize;
-            if (!allocPoolWithErrorLog(L"contractStates",  size, (void**)&contractStates[contractIndex], __LINE__))
+            // cached contracts need page-aligned state for per-chunk mprotect; off-path keeps the 64-byte alloc
+            const bool contractStateAllocOk = K12StateDigestCache::wantsPageAlignedAlloc(size)
+                ? K12StateDigestCache::allocStatePool(size, (void**)&contractStates[contractIndex])
+                : allocPoolWithErrorLog(L"contractStates", size, (void**)&contractStates[contractIndex], __LINE__);
+            if (!contractStateAllocOk)
             {
                 return false;
             }
@@ -7783,6 +7824,9 @@ static bool initialize()
     emptyTickResolver.clock = 0;
     emptyTickResolver.tick = 0;
     emptyTickResolver.lastTryClock = 0;
+
+    // contract states are now allocated, loaded and constructed; arm the per-chunk K12 digest cache
+    K12StateDigestCache::init();
 
     return true;
 }
@@ -9631,6 +9675,8 @@ void processArgs(int argc, const char* argv[]) {
         ("swap-compression", "Compress SwapVM disk pages with blosc2 on save/load (Linux only). Trades CPU for less disk I/O and footprint. Off by default.")
         ("swap-dirty-track", "Auto-track dirty SwapVM cache pages via mprotect+SIGSEGV (Linux only): skip the writeback (and compression) for pages never modified since load. Trades a small mprotect/fault cost for less disk I/O. Off by default.")
         ("auto-flush-stuck-seconds", "If the tick processor sits on the same system.tick for longer than N seconds, automatically wipe the local tickData of system.tick+1 so the request loop re-fetches it from peers. 0 disables. Reasonable production values: 60-120. Recovers automatically from corrupt-tickData stalls.", cxxopts::value<int>()->default_value("0"))
+        ("no-k12-state-cache", "Disable the incremental smart-contract state digest cache (Linux). Default on: only changed 8KB chunks are re-hashed via mprotect+SIGSEGV dirty tracking. Pass to fall back to full one-shot K12 every tick.")
+        ("k12-state-cache-verify", "Self-check the K12 state-digest cache: each digest also runs the one-shot and stalls loudly on any mismatch. For soak/CI; small per-tick cost. Off by default.")
         ("max-inbound", "Max number of inbound connection slots that may accept. Lower during catch-up to stop serving inbound peers (0 = reject all inbound, like static). Default = all incoming slots.", cxxopts::value<int>()->default_value("-1"));
     auto result = options.parse(argc, argv);
 
@@ -9642,6 +9688,14 @@ void processArgs(int argc, const char* argv[]) {
     if (result.count("swap-dirty-track")) {
         gSwapDirtyTrackEnabled = true;
         logColorToScreen("INFO", "Swap dirty tracking enabled: clean SwapVM cache pages skip writeback on eviction");
+    }
+    if (result.count("no-k12-state-cache")) {
+        K12StateDigestCache::gK12StateDigestCacheEnabled = false;
+        logColorToScreen("INFO", "K12 state-digest cache disabled: full one-shot K12 every tick");
+    }
+    if (result.count("k12-state-cache-verify")) {
+        K12StateDigestCache::gK12StateDigestCacheVerify = true;
+        logColorToScreen("INFO", "K12 state-digest cache self-verify enabled: each digest also runs the one-shot");
     }
 #endif
 
@@ -9941,6 +9995,10 @@ void signalHandler(int sig, siginfo_t* si, void* /*ucontext*/) {
     // Component B fast path: a write to an armed read-only SwapVM cache page faults here. Mark the
     // slot dirty, restore write access, and resume the store. Any other fault hits the crash path below.
     if (sig == SIGSEGV && si && SwapDirtyTrack::tryMarkDirty(si->si_addr))
+        return;
+    // A write to an armed read-only contract-state chunk faults here: mark the chunk dirty (needs si_addr),
+    // restore write access, resume the store. Only changed chunks are re-hashed on the next digest.
+    if (sig == SIGSEGV && si && K12StateDigestCache::tryMarkDirty(si->si_addr))
         return;
     boost::stacktrace::safe_dump_to("crash.dump");
     // Send to server in a child process
