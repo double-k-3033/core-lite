@@ -1,11 +1,6 @@
 #define NO_UEFI
 
 #include "gtest/gtest.h"
-
-// workaround for name clash with stdlib
-#define system qubicSystemStruct
-
-#include "../src/system.h"
 #include "../src/network_messages/tick.h"
 #include "../src/public_settings.h"
 #include "../src/platform/virtual_memory.h"
