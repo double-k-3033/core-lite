@@ -116,6 +116,7 @@ private:
             "tmp_file_no_uefi_root.bin",
             "tmp_file_no_uefi_empty.bin",
             "tmp_file_no_uefi_async.bin",
+            "tmp_file_no_uefi_missing.bin",
             "tmp_file_no_uefi_short.bin",
             "tmp_file_no_uefi_dir",
             "tmp_file_no_uefi_missing_dir",
@@ -129,6 +130,74 @@ private:
         }
     }
 };
+
+TEST_F(TestNoUefiFileIO, HostFileOpenRejectsInvalidArguments)
+{
+    CHAR16 fileName[] = L"tmp_file_no_uefi_missing.bin";
+    const std::filesystem::path filePath = getHostFilePath(fileName, nullptr);
+    FILE* file = nullptr;
+
+    EXPECT_EQ(openHostFile(nullptr, filePath, HostFileMode::ReadBinary), EINVAL);
+    EXPECT_EQ(openHostFile(&file, {}, HostFileMode::ReadBinary), EINVAL);
+    EXPECT_EQ(openHostFile(&file, filePath, static_cast<HostFileMode>(255)), EINVAL);
+    EXPECT_EQ(file, nullptr);
+}
+
+TEST_F(TestNoUefiFileIO, HostFileOpenReturnsMissingFileError)
+{
+    CHAR16 fileName[] = L"tmp_file_no_uefi_missing.bin";
+    const std::filesystem::path filePath = getHostFilePath(fileName, nullptr);
+    FILE* file = nullptr;
+
+    EXPECT_EQ(openHostFile(&file, filePath, HostFileMode::ReadBinary), ENOENT);
+    EXPECT_EQ(file, nullptr);
+}
+
+TEST_F(TestNoUefiFileIO, HostFileModesRoundTrip)
+{
+    CHAR16 fileName[] = L"tmp_file_no_uefi_missing.bin";
+    const std::filesystem::path filePath = getHostFilePath(fileName, nullptr);
+    FILE* file = nullptr;
+    const unsigned char expected = 0x5A;
+    unsigned char actual = 0;
+
+    EXPECT_EQ(openHostFile(&file, filePath, HostFileMode::WriteBinary), 0);
+    ASSERT_NE(file, nullptr);
+    EXPECT_EQ(fwrite(&expected, 1, sizeof(expected), file), sizeof(expected));
+    EXPECT_EQ(fclose(file), 0);
+
+    file = nullptr;
+    EXPECT_EQ(openHostFile(&file, filePath, HostFileMode::ReadBinary), 0);
+    ASSERT_NE(file, nullptr);
+    EXPECT_EQ(fread(&actual, 1, sizeof(actual), file), sizeof(actual));
+    EXPECT_EQ(fclose(file), 0);
+    EXPECT_EQ(actual, expected);
+}
+
+TEST_F(TestNoUefiFileIO, HostFileWriteBinaryTruncatesExistingFile)
+{
+    CHAR16 fileName[] = L"tmp_file_no_uefi_missing.bin";
+    const std::filesystem::path filePath = getHostFilePath(fileName, nullptr);
+    const unsigned char initial[] = { 1, 2, 3 };
+    const unsigned char replacement = 4;
+    FILE* file = nullptr;
+
+    ASSERT_EQ(openHostFile(&file, filePath, HostFileMode::WriteBinary), 0);
+    ASSERT_NE(file, nullptr);
+    ASSERT_EQ(fwrite(initial, 1, sizeof(initial), file), sizeof(initial));
+    ASSERT_EQ(fclose(file), 0);
+
+    file = nullptr;
+    ASSERT_EQ(openHostFile(&file, filePath, HostFileMode::WriteBinary), 0);
+    ASSERT_NE(file, nullptr);
+    ASSERT_EQ(fwrite(&replacement, 1, sizeof(replacement), file), sizeof(replacement));
+    ASSERT_EQ(fclose(file), 0);
+
+    std::error_code error;
+    const std::uintmax_t fileSize = std::filesystem::file_size(filePath, error);
+    ASSERT_FALSE(error);
+    EXPECT_EQ(fileSize, sizeof(replacement));
+}
 
 TEST_F(TestNoUefiFileIO, NullDirectoryUsesWorkingDirectory)
 {
@@ -224,10 +293,27 @@ TEST_F(TestNoUefiFileIO, WriteFailureReturnsError)
 }
 #endif
 
+#ifdef _WIN32
+TEST_F(TestNoUefiFileIO, NativeUnicodePathRoundTrip)
+{
+    CHAR16 directory[] = L"tmp_file_no_uefi_\u0E44\u0E17\u0E22";
+    CHAR16 fileName[] = L"\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25.bin";
+    const unsigned char expected[] = { 0x12, 0x34, 0x56 };
+    unsigned char actual[sizeof(expected)] = {};
+
+    ASSERT_TRUE(removeDir(directory));
+    ASSERT_EQ(save(fileName, sizeof(expected), expected, directory), sizeof(expected));
+    ASSERT_EQ(load(fileName, sizeof(actual), actual, directory), sizeof(actual));
+    EXPECT_EQ(memcmp(actual, expected, sizeof(expected)), 0);
+    EXPECT_TRUE(removeFile(directory, fileName));
+    EXPECT_TRUE(removeDir(directory));
+}
+#endif
+
 long long loadFile(CHAR16* fileName, unsigned long long totalSize, char* buffer)
 {
     FILE* file = nullptr;
-    if (q_wfopen_s(&file, fileName, 0, L"rb") != 0 || !file)
+    if (openHostFile(&file, getHostFilePath(fileName, nullptr), HostFileMode::ReadBinary) != 0 || !file)
     {
         wprintf(L"Error opening file %s!\n", fileName);
         return -1;
@@ -244,7 +330,7 @@ long long loadFile(CHAR16* fileName, unsigned long long totalSize, char* buffer)
 long long saveFile(CHAR16* fileName, unsigned long long totalSize, const char* buffer)
 {
     FILE* file = nullptr;
-    if (q_wfopen_s(&file, fileName, 0, L"wb") != 0 || !file)
+    if (openHostFile(&file, getHostFilePath(fileName, nullptr), HostFileMode::WriteBinary) != 0 || !file)
     {
         wprintf(L"Error opening file %s!\n", fileName);
         return -1;
