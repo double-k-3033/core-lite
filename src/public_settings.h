@@ -170,7 +170,7 @@ static constexpr long long NEURON_VALUE_LIMIT = 1LL;
   #ifdef LONG_RUN_LOCAL_TESTNET
   // 60 days at 1s ticks; see doc/long_run_local_testnet.md
   #ifndef LONG_RUN_EPOCH_TICK_CAPACITY
-  #define LONG_RUN_EPOCH_TICK_CAPACITY 5184000ULL
+  #define LONG_RUN_EPOCH_TICK_CAPACITY 5184244ULL
   #endif
   #define TESTNET_EPOCH_DURATION LONG_RUN_EPOCH_TICK_CAPACITY
   #else
