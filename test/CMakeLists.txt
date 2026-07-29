@@ -24,6 +24,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../lib/platform_efi) # Currently
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../src)
 include_directories(${PROJECT_ROOT_DIR})
 
+file(COPY data/example_task_bpp9000.bin data/samples_bpp9000.csv data/scores_bpp9000.csv
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/data)
 
 add_executable(
   qubic_core_tests
